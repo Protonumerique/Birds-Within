@@ -1,0 +1,26 @@
+{
+  "name": "birds-within",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Observer-centric, abstract realtime visualisation of the satellite catalogue overhead.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "fetch:tle": "node scripts/fetch-tle.mjs",
+    "validate": "node scripts/validate.mjs",
+    "reference": "python3 scripts/reference.py > scripts/reference.json",
+    "bench": "node scripts/bench.mjs"
+  },
+  "dependencies": {
+    "satellite.js": "^7.1.0",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

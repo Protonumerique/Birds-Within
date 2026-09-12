@@ -1,0 +1,48 @@
+name: Update TLE snapshot
+
+# CelesTrak refreshes GP data every 2 hours and asks that nobody poll faster than
+# that. Every 6 hours is well inside their terms and far more often than TLE
+# accuracy actually requires - elements degrade over days, not minutes.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+# Needed to push the refreshed snapshot back to the branch.
+permissions:
+  contents: write
+
+concurrency:
+  group: update-tle
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fetch stations
+        run: node scripts/fetch-tle.mjs --group=stations --out=stations.tle
+
+      # Uncomment once step 2 loads the full catalogue. `active` is ~11k objects;
+      # swap for GROUP=last-30-days, or add a second call, as the piece needs.
+      # - name: Fetch active catalogue
+      #   run: node scripts/fetch-tle.mjs --group=active --out=active.tle
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ignore the header line, which carries a timestamp and always differs.
+          if git diff --quiet -I '^# CelesTrak' -- public/data/; then
+            echo "no element changes"
+            exit 0
+          fi
+          git add public/data/
+          git commit -m "chore: refresh TLE snapshot"
+          git push
