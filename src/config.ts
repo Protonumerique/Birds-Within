@@ -63,8 +63,18 @@ export const TRAIL = {
 };
 
 export const CLOCK = {
-  /** Propagation ticks per second. Rendering stays at 60fps and interpolates. */
+  /**
+   * Minimum propagation ticks per second. Rendering runs at display rate and the GPU
+   * blends between ticks, so at 1x this can be low without anything visibly stepping.
+   */
   propagationHz: 5,
+  /** Most scene seconds allowed between ticks before the tick rate is raised. */
+  maxStepSeconds: 10,
+  /** Ceiling on ticks per second. A tick of `full` is ~17 ms in the worker. */
+  maxPropagationHz: 20,
   /** Time multipliers offered by the scrub control. */
   rates: [1, 10, 60, 300, 1800],
 };
+
+/** `?debug` shows frame timing and worker stats. Hidden otherwise - the piece has no chrome for it. */
+export const DEBUG = new URLSearchParams(location.search).has('debug');

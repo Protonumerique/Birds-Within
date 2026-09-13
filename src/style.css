@@ -175,6 +175,20 @@ td.name {
   color: #e2957f;
 }
 
+/* ?debug only. */
+#debug {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 10px;
+  white-space: pre;
+  font-size: 11px;
+  color: var(--ink);
+  background: rgba(5, 7, 10, 0.8);
+  border: 1px solid rgba(120, 160, 190, 0.22);
+  pointer-events: none;
+}
+
 /* Shown whenever the sky on screen is invented rather than real. */
 .warn {
   margin-top: 4px;

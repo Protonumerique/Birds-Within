@@ -3,13 +3,17 @@
  *
  * Compares satellite.js (what ships to the browser) against sgp4 + skyfield
  * (Python, Vallado's C++ reference) for the same elements and the same instants,
- * along every road a satrec can take in this project:
+ * along every road a position takes in this project:
  *
  *   twoline2satrec  TLE text straight in - what reference.json was computed from
- *   json2satrec     the same elements as the OMM record CelesTrak would publish,
- *                   which is what the browser builds satrecs from
+ *   json2satrec     the same elements as the OMM record CelesTrak would publish
  *   packed          that OMM record through src/catalog-format.ts encode -> decode
  *                   first - exactly what a visitor's browser receives
+ *   wasm            those packed satrecs through the WASM BulkPropagator, configured
+ *                   as src/sky.worker.ts configures it - what is actually drawn
+ *
+ * The wasm road also checks range rate: DopplerFactorCalculator against a central
+ * difference of the validated JS range, since Python has no range rate to offer.
  *
  *   python3 scripts/reference.py > scripts/reference.json   # regenerate reference
  *   npm run validate                                        # compare
@@ -29,10 +33,21 @@ import {
   eciToEcf,
   eciToGeodetic,
   ecfToLookAngles,
+  geodeticToEcf,
   degreesToRadians,
   radiansToDegrees,
   degreesLat,
   degreesLong,
+  createSingleThreadRuntime,
+  BulkPropagator,
+  EciBaseCalculator,
+  GmstCalculator,
+  EcfPositionCalculator,
+  EcfVelocityCalculator,
+  LookAnglesCalculator,
+  DopplerFactorCalculator,
+  SunPositionCalculator,
+  ShadowFractionCalculator,
 } from 'satellite.js';
 import { decodeCatalog, encodeCatalog } from '../src/catalog-format.ts';
 
@@ -46,7 +61,10 @@ const TOL = {
   latDeg: 0.01,
   lonDeg: 0.01,
   altKm: 0.5,
+  rangeRateKmS: 0.001, // 1 m/s; near-earth orbits agree to far better
 };
+
+const SPEED_OF_LIGHT_KM_S = 299_792.458;
 
 const ref = JSON.parse(readFileSync(new URL('./reference.json', import.meta.url), 'utf8'));
 
@@ -116,6 +134,11 @@ const angleDelta = (a, b) => {
   return d;
 };
 
+const caseDate = (c) => {
+  const [y, mo, d, h, mi, s] = c.utc;
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+};
+
 const worst = {};
 const failures = [];
 
@@ -145,6 +168,7 @@ for (const road of ['json2satrec', 'packed']) {
   }
 }
 
+// --- the three JS roads ---------------------------------------------------------
 for (const [road, satrecs] of Object.entries(ROADS)) {
   for (const c of ref.cases) {
     const satrec = satrecs.get(c.name);
@@ -153,8 +177,7 @@ for (const [road, satrecs] of Object.entries(ROADS)) {
       continue;
     }
 
-    const [y, mo, d, h, mi, s] = c.utc;
-    const date = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+    const date = caseDate(c);
     const ctx = `${c.name} @ ${date.toISOString()}`;
 
     const pv = propagate(satrec, date);
@@ -181,8 +204,74 @@ for (const [road, satrecs] of Object.entries(ROADS)) {
   }
 }
 
+// --- the wasm road: the propagator the sky worker runs --------------------------
+{
+  const names = fixture.map((f) => f.name);
+  const instants = [...new Set(ref.cases.map((c) => caseDate(c).getTime()))].sort((a, b) => a - b);
+  const runtime = await createSingleThreadRuntime();
+  const bulk = new BulkPropagator({
+    runtime,
+    // Same calculators, same order, as src/sky.worker.ts.
+    calculators: [
+      new EciBaseCalculator(),
+      new GmstCalculator(),
+      new EcfPositionCalculator(),
+      new EcfVelocityCalculator(),
+      new LookAnglesCalculator(),
+      new DopplerFactorCalculator(),
+      new SunPositionCalculator(),
+      new ShadowFractionCalculator(),
+    ],
+    satRecsCount: names.length,
+    datesCount: instants.length,
+  });
+  bulk.setSatRecs(names.map((n) => ROADS.packed.get(n)));
+  bulk.setDates(instants.map((ms) => new Date(ms)));
+  bulk.run({ lookAngles: { observer }, dopplerFactor: { observer: geodeticToEcf(observer) } });
+  const out = bulk.getRawOutput();
+
+  for (const c of ref.cases) {
+    const date = caseDate(c);
+    const ctx = `${c.name} @ ${date.toISOString()}`;
+    // Raw outputs are satellite-first: [sat0 date0, sat0 date1, ..., sat1 date0, ...].
+    const k = names.indexOf(c.name) * instants.length + instants.indexOf(date.getTime());
+    if (out.eci.error[k]) {
+      failures.push(`wasm: ${ctx}  SGP4 error ${out.eci.error[k]}`);
+      continue;
+    }
+
+    track('wasm', 'eciKm', out.eci.position[k * 3] - c.eci.x, ctx);
+    track('wasm', 'eciKm', out.eci.position[k * 3 + 1] - c.eci.y, ctx);
+    track('wasm', 'eciKm', out.eci.position[k * 3 + 2] - c.eci.z, ctx);
+    track('wasm', 'azimuthDeg', angleDelta(radiansToDegrees(out.lookAngles[k * 3]), c.azimuthDeg), ctx);
+    track('wasm', 'elevationDeg', radiansToDegrees(out.lookAngles[k * 3 + 1]) - c.elevationDeg, ctx);
+    track('wasm', 'rangeKm', out.lookAngles[k * 3 + 2] - c.rangeKm, ctx);
+
+    // eciToEcf is a pure rotation, so a naive range rate from its "ECF velocity" is
+    // wrong by the observer's own motion. A central difference of the range sidesteps
+    // that entirely, which makes it the right yardstick for the Doppler calculator.
+    const satrec = ROADS.packed.get(c.name);
+    const rangeAt = (offsetMs) => {
+      const t = new Date(date.getTime() + offsetMs);
+      return ecfToLookAngles(observer, eciToEcf(propagate(satrec, t).position, gstime(t))).rangeSat;
+    };
+    const central = rangeAt(500) - rangeAt(-500);
+    track('wasm', 'rangeRateKmS', (1 - out.dopplerFactor[k]) * SPEED_OF_LIGHT_KM_S - central, ctx);
+  }
+
+  // BulkPropagator memory is not garbage collected. Under Node the emscripten
+  // runtime may raise ExitStatus on teardown, which is harmless here.
+  try {
+    bulk.dispose();
+    runtime.dispose();
+  } catch {
+    /* emscripten exit */
+  }
+}
+
+const roadCount = Object.keys(worst).length;
 console.log(`reference: ${ref.generatedBy}`);
-console.log(`cases:     ${ref.cases.length} per road, ${Object.keys(ROADS).length} roads\n`);
+console.log(`cases:     ${ref.cases.length} per road, ${roadCount} roads\n`);
 console.log('worst deviation per quantity');
 for (const [road, keys] of Object.entries(worst)) {
   console.log(`  ${road}`);

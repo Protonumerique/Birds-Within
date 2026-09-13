@@ -11,6 +11,7 @@ export class Clock {
   private lastWallMs: number;
   private rate = 1;
   private paused = false;
+  private discontinuities = 0;
 
   constructor(start: Date = new Date()) {
     this.sceneMs = start.getTime();
@@ -29,12 +30,28 @@ export class Clock {
     return new Date(this.sceneMs);
   }
 
+  /** Scene time in ms since 1970, without allocating a Date every frame. */
+  get ms(): number {
+    return this.sceneMs;
+  }
+
+  /**
+   * Increments whenever scene time jumps or changes speed. Anything that buffers
+   * ahead in scene time - the sky stream does - must drop that buffer when this
+   * changes, or it will blend straight across the jump.
+   */
+  get generation(): number {
+    return this.discontinuities;
+  }
+
   get timeRate(): number {
     return this.rate;
   }
 
   set timeRate(r: number) {
+    if (r === this.rate) return;
     this.rate = r;
+    this.discontinuities++;
   }
 
   get isPaused(): boolean {
@@ -48,9 +65,11 @@ export class Clock {
   /** Jump by a number of seconds of scene time. */
   nudge(seconds: number): void {
     this.sceneMs += seconds * 1000;
+    this.discontinuities++;
   }
 
   resetToNow(): void {
     this.sceneMs = Date.now();
+    this.discontinuities++;
   }
 }

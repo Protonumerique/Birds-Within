@@ -33,9 +33,12 @@ object info panels, no orbital element readouts beyond what serves the image.
 ### Data flow
 
 ```
-CelesTrak GP API ──(deploy.yml, every 6h: fetch → pack → check → build)──> Pages: data/*.bin ──> browser
-                          │
-                  Actions cache: .catalog-cache/ (raw OMM JSON, between runs)
+CelesTrak GP API ──(deploy.yml, every 6h: fetch → pack → check → build)──> Pages: data/*.bin
+                          │                                                      │
+                  Actions cache: .catalog-cache/                                 ▼
+                                                     render thread ── bytes ──> sky worker
+                                                          ▲                     (satrecs, WASM)
+                                                          └──── SkyFrame per tick ────┘
 ```
 
 **The browser must never fetch CelesTrak directly.** Two reasons, the second decisive:
@@ -52,10 +55,10 @@ polling, "live" refresh, or a client-side cache-busting scheme.
 
 **OMM, not TLE.** CelesTrak ran out of 5-digit catalog numbers on 2026-07-11. Everything
 catalogued since has a 6-digit number and **no TLE at all** — a TLE pipeline silently
-misses every new launch. The pipeline fetches `FORMAT=json` (OMM) and the browser builds
-satrecs with `json2satrec`; there is no TLE text anywhere at runtime. `json2satrec` parses
-`EPOCH` with `new Date()`, i.e. to the millisecond, so storing epochs as float64 ms loses
-nothing it would use.
+misses every new launch. The pipeline fetches `FORMAT=json` (OMM) and satrecs are built
+with `json2satrec`; there is no TLE text anywhere at runtime. `json2satrec` parses `EPOCH`
+with `new Date()`, i.e. to the millisecond, so storing epochs as float64 ms loses nothing
+it would use.
 
 **Packed.** `src/catalog-format.ts` is a columnar little-endian binary: a column per
 field, angles ×1e4 and eccentricity / mean motion ×1e8 as int32, the drag terms as
@@ -66,10 +69,10 @@ one does not, recording the choice in the header. Columnar beats row layout beca
 constellation shells share values; measured on `active`: JSON 1,030 KB gzipped, row
 float64 895 KB, columnar float64 814 KB, columnar scaled 661 KB.
 
-The same file runs in the browser and, through Node's type stripping, in the scripts. Keep
-it **import-free and erasable-syntax-only** (no enums, no parameter properties) or the
-pipeline breaks. GitHub Pages gzips `application/octet-stream`, so there is no hand-rolled
-compression — verify that on the live site if the hosting ever changes.
+The same file runs in the browser, the worker and, through Node's type stripping, the
+scripts. Keep it **import-free and erasable-syntax-only** (no enums, no parameter
+properties) or the pipeline breaks. GitHub Pages gzips `application/octet-stream` — verified
+on the live `.bin` files — so there is no hand-rolled compression.
 
 | dataset | objects (2026-09-13) | size | what |
 |---|---|---|---|
@@ -88,57 +91,113 @@ dataset together is 20,933 of them — every payload, but ~3k of ~15k debris, ne
 from the Fengyun-1C, Cosmos 2251 and Iridium 33 breakups. General debris and most rocket
 bodies are not published as GP data. `scripts/catalog-sources.mjs` holds the list.
 
-### Propagation
+### Propagation: all of it in the sky worker
 
-satellite.js v7 does SGP4/SDP4 and, importantly, ships a **WASM `BulkPropagator`** with
-SIMD and optional pthreads. Measured on this catalogue size (`npm run bench`):
+`src/sky.worker.ts` is the only place orbits are computed for display. The render thread
+fetches the catalogue, checks its header, and **transfers** the bytes to the worker, which
+decodes them, builds satrecs, and from then on answers two requests: a `SkyFrame` for a
+given scene time, and one object's track. satellite.js is not even in the render thread's
+bundle.
 
-| path | 30k objects |
-|---|---|
-| pure JS, eci + lookAngles | ~41–59 ms |
-| WASM single-thread, 8 calculators | ~15–21 ms |
+satellite.js v7's **WASM `BulkPropagator`**, single-threaded:
 
-At 5 Hz that is 7–10% of one core, for the full catalogue *including* Doppler, sun
-position and shadow fraction. **No custom WGSL/WebGPU port is needed.** If more headroom
-is ever required, `createMultiThreadRuntime({threadsCount})` divides it further — but
-pthreads needs `SharedArrayBuffer`, which needs cross-origin isolation, which means the
-host must send `Cross-Origin-Opener-Policy: same-origin` and
+| path | objects | per tick |
+|---|---|---|
+| pure JS, eci + lookAngles (`npm run bench`) | 30,000 | ~41–59 ms |
+| WASM, 8 calculators (`npm run bench`) | 30,000 | ~15–21 ms |
+| WASM in the worker, as configured | 20,931 (`full`) | 14–17 ms |
+
+**Single-thread, deliberately.** `createMultiThreadRuntime()` would divide this further,
+but pthreads needs `SharedArrayBuffer`, which needs cross-origin isolation, which means
+the host must send `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. **GitHub Pages cannot send headers.**
-Netlify and Cloudflare Pages can. Single-thread is fast enough; treat multi-thread as a
-hosting-constrained option, not a default.
+Netlify and Cloudflare Pages can. Nothing currently needs it.
 
-The calculators worth knowing about:
+The single-thread WASM build embeds its binary inside JavaScript (`wasm-build/base-release`,
+~150 KB, dynamically imported by the worker). There is **no `.wasm` asset**, so no MIME type
+to get wrong on the host.
 
-- `LookAnglesCalculator` — az/el/range for an observer, exactly our model
-- `DopplerFactorCalculator` — needs the observer as an **ECF vector**, not geodetic
-- `SunPositionCalculator` + `ShadowFractionCalculator` — 0 = sunlit, 1 = umbra.
-  **This is naked-eye visibility**, and is doing real artistic work: which of these
-  thousands of objects you could actually see.
+The worker's calculators: `EciBase`, `Gmst`, `EcfPosition`, `EcfVelocity`, `LookAngles`
+(observer geodetic), `DopplerFactor` (observer as an **ECF vector**, not geodetic),
+`SunPosition`, `ShadowFraction` (0 = sunlit, 1 = umbra). Shadow is **naked-eye
+visibility**, and is doing real artistic work: which of these thousands of objects you
+could actually see.
 
-`BulkPropagator` allocates WASM memory. Dispose it or it leaks — `using`, or an explicit
-`.dispose()` on teardown.
+**Range rate is `DopplerFactorCalculator`, verified before use.** It was checked against a
+central difference (±0.5 s) of the validated JS range, on every object of `full` at three
+instants:
 
-Until step 2 moves propagation off the main thread, `src/sky.ts` differences range only
-for objects **above the horizon**; `SkyState.rangeRate` is NaN below it. Differencing is a
-second propagation per object, and nothing reads range rate for objects that are not up —
-not the readout, and not the future sonification. Measured on `active`: 54 ms per tick
-differencing everything, 24 ms like this.
+| class | p99 | worst |
+|---|---|---|
+| near earth (SGP4), above horizon | 0.14 m/s | 1.3 m/s |
+| near earth (SGP4), below horizon | 0.12 m/s | 2.2 m/s |
+| deep space (SDP4), above horizon | 0.37 m/s | 3.0 m/s |
+| deep space (SDP4), below horizon | 0.76 m/s | 5.4 m/s |
 
-### Rendering
+A mishandled Earth-rotation term would show ~280 m/s at this latitude; the residual is
+SGP4's velocity not being exactly the derivative of its position. The 1-second forward
+difference it replaced was 69 m/s off near closest approach — it estimates the rate half a
+second late — and cost a second propagation per object; Doppler costs 0.9 ms per tick.
+`npm run validate` keeps checking it on the fixture, at 1 m/s tolerance.
 
-three.js. `Points` with a custom shader for bodies, `BufferGeometry` for trails.
-`src/scene.ts` owns all of it. Alt/az maps to scene space with +Y up, +X East, −Z North,
-so the camera's default forward looks North.
+`BulkPropagator` allocates WASM memory that is not garbage collected. The worker disposes
+the propagator and runtime before re-initialising; otherwise they live as long as the page.
+Init — decode, 21k `json2satrec`, and a ~600 ms `setSatRecs` — takes 0.6–0.8 s in the worker,
+behind a "building N orbits…" status, with the page responsive throughout.
 
-Keep the render loop decoupled from propagation: propagate at `CLOCK.propagationHz`,
-render at 60 fps, interpolate between. **Interpolating azimuth needs wrap-around care**
-— lerping across 359°→1° sends the object the long way round the sky.
+### Rendering: two ticks per object, blended on the GPU
+
+three.js, `src/scene.ts`. Every object is drawn from **two ticks at once** and blended in
+the vertex shader by one uniform, `uT`. The CPU work per rendered frame is setting that
+uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
+
+- **Blend unit direction vectors and renormalise.** This is why there is no azimuth
+  wrap-around problem — lerping 359° → 1° goes the long way round, but a vector has no
+  seam. Do not reintroduce alt/az interpolation.
+- **Appearance is decided from blended values in the shader** — above or below the
+  horizon, lit or eclipsed, size by range — so an object changes colour exactly where it
+  crosses the horizon on screen. Step 3's visual work belongs there.
+- `src/sky-frame.ts` is **the one place** alt/az maps to scene space: +Y up, +X East,
+  −Z North, so the camera's default forward looks North. The worker and the graticule
+  both use it.
+- `SKY.showBelowHorizonDeg` is −90: everything is drawn, below-horizon objects dimmed. The
+  horizon cull applies to the CPU readers — the readout sorts only the ~6–9% that are up.
+  Whether below-horizon objects belong in the image at all is a Step 3 decision.
+
+### The tick stream
+
+`src/sky-stream.ts` is the render thread's side of the worker. It requests frames **ahead
+of scene time**, keeping two ticks of lead with at most three requests in flight, and
+hands the scene the pair bracketing "now".
+
+- **Tick rate adapts to the time rate:** `CLOCK.propagationHz` (5) at 1×, raised so that no
+  two ticks are more than `CLOCK.maxStepSeconds` (10 s of scene time) apart, capped at
+  `CLOCK.maxPropagationHz` (20). At 1800× a tick still spans 90 s, and blends cut the
+  corner of long arcs — at that speed it reads as motion blur.
+- **Discontinuities flush the buffer.** Scrubbing, NOW and rate changes bump
+  `Clock.generation`; the stream drops its frames and refills from the new time, keeping
+  the last frame on screen meanwhile. Late answers from an old generation are discarded.
+- **Frame buffers are transferred, not copied**, and handed back to the worker for reuse.
+
+Measured in a real browser at 60 Hz with `?debug`: frame p50 and p95 **17.0 ms, 0 of 180
+frames over 25 ms, at every time rate**; worker tick 14 ms; queue 4 ready, 0 in flight.
+Before this step, `full` dropped a frame on every tick and positions stepped five times a
+second.
+
+**Judging smoothness.** `?debug` shows rolling frame percentiles, worker tick cost and
+queue depth, and exposes `window.birds = { stream, scene, clock }` for the console.
+Healthy is p95 near the display's refresh interval and a queue of 2–4 ready, 0–1 in
+flight; "1 ready, 3 in flight" stuck in place means the stream is starving. **Measure in a
+real browser.** Embedded or unfocused browser panes can throttle WebGL presentation to
+about one frame a second, which looks exactly like a pipeline stall — a bare WebGL
+`clear()` loop in the same tab is the control.
 
 ### Time
 
-`src/clock.ts` is the single authority for scene time. Everything — propagation, trails,
-sun position — reads from it. Mixing in a bare `new Date()` anywhere else is how a
-scrubbed timeline silently desynchronises from what is drawn.
+`src/clock.ts` is the single authority for scene time. Everything — propagation requests,
+trails, sun position — reads from it. Mixing in a bare `new Date()` anywhere else is how a
+scrubbed timeline silently desynchronises from what is drawn. `Clock.generation` counts
+discontinuities; anything that buffers ahead in scene time must flush when it changes.
 
 ## Deployment
 
@@ -149,7 +208,8 @@ perfectly in `npm run dev`. `.github/workflows/deploy.yml` builds and publishes 
 
 `base` in `vite.config.ts` is `'./'` — relative, so one build works both at a domain root
 and under `/birds-within/`. With `base: '/'` the built page requests `/assets/…`, which
-404s on a project page: the same blank screen. **Do not change it back to `'/'`.**
+404s on a project page: the same blank screen. **Do not change it back to `'/'`.** The
+worker and its WASM chunk are resolved relative to it too.
 
 ### The catalogue is built at deploy time, never committed
 
@@ -215,11 +275,13 @@ python3 scripts/reference.py > scripts/reference.json   # sgp4 (Vallado C++) + s
 npm run validate                                        # satellite.js vs that
 ```
 
-`validate` checks **three roads to a satrec**: `twoline2satrec` on the frozen TLE text;
-`json2satrec` on the same elements as an OMM record, which is what the browser uses; and
-that record through `catalog-format.ts` encode → decode first, which is what the browser
-actually receives. Before propagating, it also requires the OMM roads to reach SGP4 with
-the same satrec fields as the TLE road. All three currently agree with the reference
+`validate` checks **four roads to a position**: `twoline2satrec` on the frozen TLE text;
+`json2satrec` on the same elements as an OMM record; that record through
+`catalog-format.ts` encode → decode first, which is what the browser receives; and those
+packed satrecs through the **WASM `BulkPropagator` configured exactly as the worker
+configures it**, which is what is drawn. Before propagating, it also requires the OMM
+roads to reach SGP4 with the same satrec fields as the TLE road, and the WASM road checks
+Doppler range rate against a central difference. All four agree with the reference
 identically, 25 cases across 5 objects and 5 instants:
 
 | quantity | worst deviation |
@@ -229,11 +291,13 @@ identically, 25 cases across 5 objects and 5 instants:
 | elevation | 4.9e-4 ° |
 | range | 2.7e-2 km |
 | sub-satellite lat/lon | < 4.1e-4 ° |
+| range rate (WASM Doppler vs central difference) | 2.1e-4 km/s |
 
 Small non-zero topocentric differences are expected and correct: satellite.js rotates
 TEME → ECEF by GMST alone, Skyfield applies the full TEME → ITRF transform including
-polar motion. **Re-run `npm run validate` after touching anything in `src/sky.ts` or
-`src/catalog-format.ts`.** CI runs it on every deploy.
+polar motion. **Re-run `npm run validate` after touching `src/sky.worker.ts`,
+`src/sky-frame.ts` or `src/catalog-format.ts`**, and keep its calculator list in step with
+the worker's. CI runs it on every deploy.
 
 Both sides read **`scripts/fixtures/validation.tle`**, a frozen file, and never the
 published catalogue. This is not tidiness. The check originally read the TLE snapshot a
@@ -242,37 +306,38 @@ the same objects propagated from *different element sets*, and `npm run validate
 ~11,000 km of ECI "deviation" that was not a bug in anything. A validation fixture a cron
 job can edit is not a fixture. If you ever change that file, regenerate `reference.json`
 in the same commit. It stays TLE text on purpose: the OMM roads are derived from it inside
-`validate.mjs`, so one frozen source covers all three.
+`validate.mjs`, so one frozen source covers all four.
 
 Regenerating needs `pip install sgp4 skyfield`. Comparing does not — `npm run validate`
 is pure Node, so the check runs anywhere even when Python is unavailable.
 
-One trap already handled: `eciToEcf` is a pure rotation and does **not** subtract the
-frame's angular velocity, so dotting that "ECF velocity" against the line of sight gives
-a range rate wrong by the observer's own motion — hundreds of m/s at this latitude, a
-large fraction of the Doppler signal. `src/sky.ts` differences the range over 1 s instead.
-If you switch to `DopplerFactorCalculator`, verify it against the differenced value first.
+One trap worth knowing even though nothing falls into it now: `eciToEcf` is a pure
+rotation and does **not** subtract the frame's angular velocity, so dotting that "ECF
+velocity" against the line of sight gives a range rate wrong by the observer's own motion
+— hundreds of m/s at this latitude, a large fraction of the Doppler signal.
+`DopplerFactorCalculator` applies the rotation correction correctly (see the table above).
+Anything that computes range rate by hand must not repeat the naive version.
 
 ## Roadmap
 
 - [x] **Step 0 — spike.** Vendored snapshot, JS propagation decoupled from the render
-      loop at `CLOCK.propagationHz`, abstract dome, one trail, clock with scrub,
-      sunlit/eclipsed distinction. Validated against Python.
+      loop, abstract dome, one trail, clock with scrub, sunlit/eclipsed distinction.
+      Validated against Python.
 - [x] **Step 1 — data pipeline.** CelesTrak OMM JSON, fetched at deploy time, packed into
       a columnar binary, gated by an exact round-trip check, never committed. `active`
       and `full` behind `?catalog=`, committed `synthetic` as the offline fallback.
-      `json2satrec` and the packed format both validated against Python. ← *you are here*
-- [ ] **Step 2 — scale.** `BulkPropagator` in a Web Worker, horizon cull (only ~6–9% of
-      the catalogue is above the horizon at once), interpolation between propagation
-      ticks. The main thread currently spends **24–33 ms per tick** propagating
-      `active` / `full` in pure JS — a visible hitch five times a second. Loading is not
-      the problem: decode plus `json2satrec` for all of `full` is under 250 ms.
+- [x] **Step 2 — scale.** WASM `BulkPropagator` in a Web Worker; every object blended
+      between two ticks on the GPU; ticks run ahead of scene time at an adaptive rate;
+      Doppler range rate verified; the readout culled to what is above the horizon. Smooth
+      at every time rate in a real browser — p95 17.0 ms, 0 of 180 frames over 25 ms.
+      ← *you are here*
 - [ ] **Step 3 — aesthetics.** The actual work. Visual grammar, shader design, what a
-      satellite *is* on screen, how trails read, how density reads. The `kind` byte is
-      there for this.
-- [ ] **Step 4 — sound.** Web Audio over the range-rate and pass events the model already
-      produces. Pitch ← range rate, amplitude ← elevation, pan ← azimuth, events on
-      AOS/LOS. A global view sonifies into mush; one observer's sky does not.
+      satellite *is* on screen, how trails read, how density reads, whether the far side
+      of the Earth is drawn at all. Appearance already lives in the vertex shader, fed
+      blended direction, shadow and range; the `kind` byte is in the catalogue for it.
+- [ ] **Step 4 — sound.** Web Audio over the `SkyFrame` columns: pitch ← range rate,
+      amplitude ← elevation, pan ← azimuth, events on AOS/LOS. A global view sonifies into
+      mush; one observer's sky does not.
 
 ## Conventions
 
@@ -280,6 +345,12 @@ If you switch to `DopplerFactorCalculator`, verify it against the differenced va
   `scripts/reference.py`, or the validation compares different things.
 - Angles are radians internally; degrees only at the UI boundary.
 - Distances in kilometres throughout.
+- **Only the worker propagates** — frames and trails alike. If the render thread ever
+  needs orbital information, add a message to `sky-frame.ts`'s protocol rather than
+  importing satellite.js there.
+- `SkyFrame` columns are indexed like `stream.names`. Objects SGP4 rejects at init are
+  dropped before indexing. `range` is `NO_POSITION` (−1) where SGP4 fails at that instant,
+  and every reader — shader included — must check it.
 - `public/data/active.bin` and `full.bin` are **built, never committed**. Locally
   `npm run fetch:catalog` makes them. It will not re-request anything fetched in the last
   2 hours, so running it repeatedly is safe — do not work around that.
@@ -304,10 +375,10 @@ intact in any fork; pointing browsers straight at CelesTrak earns 403s and an IP
 
 ```bash
 npm install
-npm run dev              # localhost:5173 - the synthetic sky until you fetch
+npm run dev              # localhost:5173 - the synthetic sky until you fetch; add ?debug
 npm run fetch:catalog    # CelesTrak -> .catalog-cache/ -> public/data/{active,full}.bin
 npm run check:catalog    # sanity + exact round trip of the packed catalogues
-npm run validate         # three roads to a satrec, against the Python reference
+npm run validate         # four roads to a position, against the Python reference
 npm run bench            # WASM vs JS at catalogue scale
 npm run build            # typecheck + production build
 npm run make:synthetic   # regenerate the committed offline fallback

@@ -1,35 +1,70 @@
 import * as THREE from 'three';
 import { SKY } from './config';
-import type { SkyState } from './sky';
+import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
+import type { FramePair } from './sky-stream';
 
-/**
- * Horizontal coordinates to scene space.
- *
- * Azimuth runs from North through East, matching `ecfToLookAngles`. The scene is
- * right-handed with +Y up, +X East and -Z North, so the camera's default forward
- * (-Z) looks North on load.
- */
+/** Horizontal coordinates to scene space, scaled. The mapping itself lives in sky-frame.ts. */
+const scratch = [0, 0, 0];
 export function altAzToVec3(azimuth: number, elevation: number, radius: number, out = new THREE.Vector3()) {
-  const cosEl = Math.cos(elevation);
-  return out.set(
-    Math.sin(azimuth) * cosEl * radius,
-    Math.sin(elevation) * radius,
-    -Math.cos(azimuth) * cosEl * radius
-  );
+  directionFromAltAz(azimuth, elevation, scratch);
+  return out.set(scratch[0]! * radius, scratch[1]! * radius, scratch[2]! * radius);
 }
 
+/**
+ * Every object is drawn from TWO propagation ticks at once and blended here, every
+ * frame, by one uniform. Ticks arrive a few times a second; the CPU work per
+ * rendered frame is setting `uT`. This is what removed the snapping.
+ *
+ * Blending unit direction vectors and renormalising, rather than azimuth and
+ * elevation, sidesteps the 359° -> 1° wrap entirely: there is no seam in a vector.
+ * Appearance - above or below the horizon, lit or eclipsed, size by range - is
+ * decided from the blended values, so an object changes colour exactly where it
+ * crosses the horizon on screen, not at the next tick.
+ */
 const POINT_VERT = /* glsl */ `
-  attribute float aSize;
-  attribute float aAlpha;
-  attribute vec3 aColor;
+  // position / aDir1  : unit direction from the observer at tick slot 0 / slot 1
+  // aState0 / aState1 : x = shadow fraction, y = range km (negative = no position)
+  attribute vec3 aDir1;
+  attribute vec2 aState0;
+  attribute vec2 aState1;
+
+  uniform float uT;
+  uniform float uRadius;
+  uniform float uPixelRatio;
+  uniform float uSinLowest;
+  uniform vec3 uColorLit;
+  uniform vec3 uColorEclipsed;
+  uniform vec3 uColorBelow;
+
   varying float vAlpha;
   varying vec3 vColor;
+
+  void hide() {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    vAlpha = 0.0;
+    vColor = vec3(0.0);
+  }
+
   void main() {
-    vAlpha = aAlpha;
-    vColor = aColor;
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    gl_Position = projectionMatrix * mv;
-    gl_PointSize = aSize;
+    if (aState0.y < 0.0 || aState1.y < 0.0) { hide(); return; }
+
+    vec3 blended = mix(position, aDir1, uT);
+    if (dot(blended, blended) < 1e-12) { hide(); return; }
+    vec3 dir = normalize(blended);
+    if (dir.y < uSinLowest) { hide(); return; }
+
+    bool above = dir.y >= 0.0;
+    bool lit = mix(aState0.x, aState1.x, uT) < 0.5;
+    float range = mix(aState0.y, aState1.y, uT);
+
+    vColor = above ? (lit ? uColorLit : uColorEclipsed) : uColorBelow;
+    vAlpha = above ? (lit ? 1.0 : 0.6) : 0.3;
+
+    // Nearer objects read as larger. Purely a depth cue - the dome has no scale.
+    float nearness = clamp(1.0 - (range - 400.0) / 4000.0, 0.25, 1.0);
+    gl_PointSize = (above ? 16.0 : 8.0) * nearness * uPixelRatio;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
   }
 `;
 
@@ -56,16 +91,28 @@ const COLOR_ECLIPSED = new THREE.Color('#86b4d2');
 /** Below the horizon: on the other side of the world. */
 const COLOR_BELOW = new THREE.Color('#3f5b6e');
 
+interface TickSlot {
+  direction: THREE.BufferAttribute;
+  state: THREE.BufferAttribute;
+  frame: SkyFrame | null;
+}
+
 export class SkyScene {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGLRenderer;
 
-  private points: THREE.Points;
-  private positions: Float32Array;
-  private sizes: Float32Array;
-  private alphas: Float32Array;
-  private colors: Float32Array;
+  private slots: [TickSlot, TickSlot];
+  readonly points: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  readonly uniforms = {
+    uT: { value: 0 },
+    uRadius: { value: SKY.radius },
+    uPixelRatio: { value: 1 },
+    uSinLowest: { value: Math.sin(THREE.MathUtils.degToRad(SKY.showBelowHorizonDeg)) },
+    uColorLit: { value: COLOR_LIT },
+    uColorEclipsed: { value: COLOR_ECLIPSED },
+    uColorBelow: { value: COLOR_BELOW },
+  };
 
   private trail: THREE.Line;
   private trailPositions: Float32Array;
@@ -74,10 +121,11 @@ export class SkyScene {
   private yaw = 0;
   private pitch = THREE.MathUtils.degToRad(38);
 
-  constructor(canvas: HTMLCanvasElement, capacity: number, trailCapacity = 4096) {
+  constructor(canvas: HTMLCanvasElement, count: number, trailCapacity = 4096) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setClearColor(0x05070a, 1);
+    this.uniforms.uPixelRatio.value = this.renderer.getPixelRatio();
 
     // Wide by default: the piece is about how much is up there, so seeing a large
     // slice of the dome at once matters more than an undistorted field of view.
@@ -88,23 +136,32 @@ export class SkyScene {
     this.scene.add(this.buildGround());
 
     // --- satellites ---------------------------------------------------------
-    this.positions = new Float32Array(capacity * 3);
-    this.sizes = new Float32Array(capacity);
-    this.alphas = new Float32Array(capacity);
-    this.colors = new Float32Array(capacity * 3);
+    const makeSlot = (): TickSlot => {
+      const state = new Float32Array(count * 2);
+      // Hidden until the first tick lands.
+      for (let i = 0; i < count; i++) state[i * 2 + 1] = NO_POSITION;
+      return {
+        direction: new THREE.BufferAttribute(new Float32Array(count * 3), 3).setUsage(THREE.DynamicDrawUsage),
+        state: new THREE.BufferAttribute(state, 2).setUsage(THREE.DynamicDrawUsage),
+        frame: null,
+      };
+    };
+    this.slots = [makeSlot(), makeSlot()];
 
     const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    geom.setAttribute('aSize', new THREE.BufferAttribute(this.sizes, 1));
-    geom.setAttribute('aAlpha', new THREE.BufferAttribute(this.alphas, 1));
-    geom.setAttribute('aColor', new THREE.BufferAttribute(this.colors, 3));
-    geom.setDrawRange(0, 0);
+    // three.js sizes the draw from `position`, so slot 0's directions go there.
+    geom.setAttribute('position', this.slots[0].direction);
+    geom.setAttribute('aDir1', this.slots[1].direction);
+    geom.setAttribute('aState0', this.slots[0].state);
+    geom.setAttribute('aState1', this.slots[1].state);
+    geom.setDrawRange(0, count);
 
     this.points = new THREE.Points(
       geom,
       new THREE.ShaderMaterial({
         vertexShader: POINT_VERT,
         fragmentShader: POINT_FRAG,
+        uniforms: this.uniforms,
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
@@ -129,6 +186,48 @@ export class SkyScene {
     this.attachLook(canvas);
     this.resize();
     addEventListener('resize', () => this.resize());
+  }
+
+  /**
+   * Show a pair of ticks blended by `t`. Uploads only a frame the GPU does not
+   * already hold - normally one per tick, into whichever slot is now stale.
+   */
+  showFrames({ from, to, t }: FramePair) {
+    const slotOf = (frame: SkyFrame) => (this.slots[0].frame === frame ? 0 : this.slots[1].frame === frame ? 1 : -1);
+    let fromSlot = slotOf(from);
+    let toSlot = slotOf(to);
+
+    if (from === to) {
+      if (fromSlot < 0) fromSlot = this.upload(0, from);
+      this.uniforms.uT.value = fromSlot;
+      return;
+    }
+
+    if (fromSlot < 0 && toSlot < 0) {
+      fromSlot = this.upload(0, from);
+      toSlot = this.upload(1, to);
+    } else if (fromSlot < 0) {
+      fromSlot = this.upload(1 - toSlot, from);
+    } else if (toSlot < 0) {
+      toSlot = this.upload(1 - fromSlot, to);
+    }
+
+    // uT always runs slot 0 -> slot 1, whichever of them is older.
+    this.uniforms.uT.value = fromSlot === 0 ? t : 1 - t;
+  }
+
+  private upload(index: number, frame: SkyFrame): number {
+    const slot = this.slots[index]!;
+    (slot.direction.array as Float32Array).set(frame.direction);
+    const state = slot.state.array as Float32Array;
+    for (let i = 0; i < frame.count; i++) {
+      state[i * 2] = frame.shadow[i]!;
+      state[i * 2 + 1] = frame.range[i]!;
+    }
+    slot.direction.needsUpdate = true;
+    slot.state.needsUpdate = true;
+    slot.frame = frame;
+    return index;
   }
 
   /** Horizon ring, almucantars and meridians - the only structure in the scene. */
@@ -268,59 +367,17 @@ export class SkyScene {
     );
   }
 
-  /** Push one frame of satellite states into the GPU buffers. */
-  update(states: SkyState[]) {
-    const geom = this.points.geometry;
-    const R = SKY.radius;
-    const belowLimit = THREE.MathUtils.degToRad(SKY.showBelowHorizonDeg);
-    const v = new THREE.Vector3();
+  /** Draw one selected object's track across the dome, from unit directions. */
+  setTrail(directions: Float32Array) {
+    const R = SKY.radius * 0.995;
+    const lowest = this.uniforms.uSinLowest.value;
     let n = 0;
 
-    for (const s of states) {
-      if (s.elevation < belowLimit) continue;
-      if (n * 3 + 2 >= this.positions.length) break;
-
-      altAzToVec3(s.azimuth, s.elevation, R, v);
-      this.positions[n * 3] = v.x;
-      this.positions[n * 3 + 1] = v.y;
-      this.positions[n * 3 + 2] = v.z;
-
-      const above = s.elevation >= 0;
-      const lit = s.shadow < 0.5;
-      const colour = !above ? COLOR_BELOW : lit ? COLOR_LIT : COLOR_ECLIPSED;
-      this.colors[n * 3] = colour.r;
-      this.colors[n * 3 + 1] = colour.g;
-      this.colors[n * 3 + 2] = colour.b;
-
-      // Nearer objects read as larger. Purely a depth cue - the dome has no scale.
-      const nearness = THREE.MathUtils.clamp(1 - (s.range - 400) / 4000, 0.25, 1);
-      this.sizes[n] = (above ? 16 : 8) * nearness * this.renderer.getPixelRatio();
-      this.alphas[n] = above ? (lit ? 1 : 0.6) : 0.3;
-
-      n++;
-    }
-
-    geom.setDrawRange(0, n);
-    geom.attributes.position!.needsUpdate = true;
-    geom.attributes.aSize!.needsUpdate = true;
-    geom.attributes.aAlpha!.needsUpdate = true;
-    geom.attributes.aColor!.needsUpdate = true;
-  }
-
-  /** Draw the track of one selected object across the dome. */
-  setTrail(track: { azimuth: number; elevation: number }[]) {
-    const R = SKY.radius;
-    const belowLimit = THREE.MathUtils.degToRad(SKY.showBelowHorizonDeg);
-    const v = new THREE.Vector3();
-    let n = 0;
-
-    for (const p of track) {
-      if (p.elevation < belowLimit) continue;
-      if (n >= this.trailCapacity) break;
-      altAzToVec3(p.azimuth, p.elevation, R * 0.995, v);
-      this.trailPositions[n * 3] = v.x;
-      this.trailPositions[n * 3 + 1] = v.y;
-      this.trailPositions[n * 3 + 2] = v.z;
+    for (let i = 0; i + 2 < directions.length && n < this.trailCapacity; i += 3) {
+      if (directions[i + 1]! < lowest) continue;
+      this.trailPositions[n * 3] = directions[i]! * R;
+      this.trailPositions[n * 3 + 1] = directions[i + 1]! * R;
+      this.trailPositions[n * 3 + 2] = directions[i + 2]! * R;
       n++;
     }
 

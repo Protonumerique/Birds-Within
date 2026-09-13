@@ -22,7 +22,8 @@ Without the fetch, the dev server shows `synthetic.bin` — ~1,450 **invented** 
 committed so the project runs offline — and says so on screen. `npm run fetch:catalog`
 pulls the real catalogue from CelesTrak and packs it into `public/data/active.bin`
 (16,563 active payloads) and `full.bin` (20,933: everything CelesTrak publishes, debris
-included). Add `?catalog=full` to the URL for the larger set.
+included). Add `?catalog=full` to the URL for the larger set, and `?debug` for frame
+timing and worker stats.
 
 Drag to look around, scroll to zoom, click a row to draw that object's track.
 
@@ -42,18 +43,29 @@ numbers the TLE format cannot represent. The binary format is documented at the 
 CelesTrak publishes about 21k of the ~35k objects on orbit — every payload, but only a
 fraction of the debris. `public/data/SOURCES.md` has the detail.
 
+## How it stays smooth
+
+All orbit computation runs in a Web Worker on satellite.js's WASM `BulkPropagator` — about
+15 ms for the whole `full` catalogue, a few times a second. The render thread never
+propagates. Each object is drawn from two propagation ticks at once and blended on the
+GPU every frame, so motion is continuous at any time rate while the CPU does almost
+nothing per frame.
+
 ## Verifying it
 
 The coordinate and time handling is validated against an independent implementation —
-Brandon Rhodes' `sgp4` (Vallado's C++ reference) plus Skyfield — along every road a satrec
-takes here: from TLE text, from OMM, and from OMM through the packed binary.
+Brandon Rhodes' `sgp4` (Vallado's C++ reference) plus Skyfield — along every road a
+position takes here: from TLE text, from OMM, from OMM through the packed binary, and
+through the WASM propagator exactly as the worker runs it. Doppler range rate is checked
+too.
 
 ```bash
 npm run validate        # Node only
 npm run check:catalog   # the fetched catalogues decode exactly, and look sane
 ```
 
-ECI positions agree to about 10 cm; alt/az to a few thousandths of a degree.
+ECI positions agree to about 10 cm; alt/az to a few thousandths of a degree; range rate
+to well under 1 m/s.
 
 Both sides of `validate` propagate `scripts/fixtures/validation.tle`, which is frozen on
 purpose and must never be refreshed: the checked-in `scripts/reference.json` was computed
@@ -73,19 +85,23 @@ npm run bench
 
 satellite.js v7's WASM `BulkPropagator` handles 30k objects — with Doppler, sun position
 and shadow fraction — in roughly 15–20 ms single-threaded, two to four times faster than
-the pure-JS path.
+the pure-JS path. Single-threaded on purpose: the multi-threaded runtime needs response
+headers GitHub Pages cannot send, and nothing needs it yet.
 
 ## Layout
 
 ```
 src/
   config.ts            observer, dataset, dome, trail and clock settings
-  catalog-format.ts    the packed catalogue binary - shared with the scripts
-  catalog.ts           loading it into satrecs
-  sky.ts               propagation to observer-relative state
-  scene.ts             three.js — dome, points, trails, look controls
+  catalog-format.ts    the packed catalogue binary - shared with the worker and scripts
+  catalog.ts           fetching it and checking its header
+  sky.worker.ts        every orbit computation: satrecs, WASM propagation, trails
+  sky-frame.ts         the worker <-> render thread contract, and alt/az -> scene space
+  sky-stream.ts        ticks ahead of scene time, and the pair to blend for now
+  scene.ts             three.js — dome, GPU-blended points, trails, look controls
   clock.ts             scene time (the single authority)
   ui.ts                overlay
+  debug.ts             ?debug panel
   main.ts              wiring and the frame loop
 scripts/
   catalog-sources.mjs  which CelesTrak datasets, and why

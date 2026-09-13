@@ -1,93 +1,100 @@
 import './style.css';
 
-import { DATASET, TRAIL, CLOCK, catalogUrl, type Dataset } from './config';
-import { loadCatalog, type Catalog } from './catalog';
-import { skyAt, trackOf, type SkyState } from './sky';
+import { DATASET, DEBUG, OBSERVER, TRAIL, catalogUrl, type Dataset } from './config';
+import { fetchCatalog, type FetchedCatalog } from './catalog';
+import { geodeticObserver } from './sky-frame';
+import { SkyStream } from './sky-stream';
 import { SkyScene } from './scene';
 import { Clock } from './clock';
 import { createHud } from './ui';
+import { createDebugPanel } from './debug';
 
 /**
- * Load the configured catalogue.
+ * Fetch the configured catalogue.
  *
  * In development only, fall back to the committed synthetic set when the real one
  * has not been fetched, so `npm run dev` works offline and on a fresh clone. The
  * published page never substitutes invented orbits for real ones: the piece is
  * about what is actually up there, so a missing catalogue is an error, not a swap.
  */
-async function load(): Promise<{ catalog: Catalog; dataset: Dataset }> {
+async function load(): Promise<{ catalog: FetchedCatalog; dataset: Dataset }> {
   try {
-    return { catalog: await loadCatalog(catalogUrl(DATASET)), dataset: DATASET };
+    return { catalog: await fetchCatalog(catalogUrl(DATASET)), dataset: DATASET };
   } catch (err) {
     if (!import.meta.env.DEV || DATASET === 'synthetic') throw err;
     console.warn(
       `[catalog] ${String(err)}\n` +
         'Falling back to SYNTHETIC data. Run `npm run fetch:catalog` for the real sky.'
     );
-    return { catalog: await loadCatalog(catalogUrl('synthetic')), dataset: 'synthetic' };
+    return { catalog: await fetchCatalog(catalogUrl('synthetic')), dataset: 'synthetic' };
   }
 }
 
 async function main() {
   const canvas = document.querySelector<HTMLCanvasElement>('#sky')!;
   const hudRoot = document.querySelector<HTMLElement>('#hud')!;
-  hudRoot.innerHTML = `<div class="panel"><h1>Birds Within</h1><div class="sub">loading the catalogue…</div></div>`;
+  const status = (text: string) => {
+    hudRoot.innerHTML = `<div class="panel"><h1>Birds Within</h1><div class="sub">${text}</div></div>`;
+  };
 
+  status('loading the catalogue…');
   const { catalog, dataset } = await load();
-  const entries = catalog.entries;
-  if (entries.length === 0) throw new Error('catalogue is empty');
-  if (catalog.dropped) console.info(`[catalog] ${catalog.dropped} element sets rejected by SGP4 at init`);
+
+  // The satrec builds and WASM allocation take the better part of a second for
+  // `full` - in the worker, so the page stays responsive while this shows.
+  status(`building ${catalog.header.count.toLocaleString('en')} orbits…`);
+  const stream = await SkyStream.start(catalog.bytes, geodeticObserver(OBSERVER));
+  if (stream.count === 0) throw new Error('catalogue is empty');
+  if (stream.dropped) console.info(`[catalog] ${stream.dropped} element sets rejected by SGP4 at init`);
+  if (DEBUG) console.info(`[sky worker] ready in ${stream.initMs.toFixed(0)} ms`);
 
   const clock = new Clock();
-  const scene = new SkyScene(canvas, entries.length);
-  const hud = createHud(hudRoot, clock, entries, { dataset, generatedAt: catalog.generatedAt });
+  const scene = new SkyScene(canvas, stream.count);
+  const hud = createHud(hudRoot, clock, { names: stream.names, dataset, generatedAt: stream.generatedAt });
+  const debug = DEBUG ? createDebugPanel(document.body) : null;
+  // ?debug: the running piece, for poking at from the console.
+  if (DEBUG) Object.assign(window, { birds: { stream, scene, clock } });
 
-  const propagationInterval = 1000 / CLOCK.propagationHz;
-  let states: SkyState[] = [];
-  let lastPropagation = -Infinity;
   let lastHud = -Infinity;
-  let lastTrailIndex = -1;
-  let lastTrailMs = 0;
+  let lastWall = performance.now();
+  let trailIndex = -1;
+  let trailCentre = 0;
+  let trailPending = false;
 
   function frame() {
     clock.tick();
-    const date = clock.date;
+    const now = clock.ms;
     const wall = performance.now();
 
-    // Propagation runs on its own clock; rendering stays at display rate.
-    //
-    // STEP 2 moves this into a Web Worker using satellite.js's WASM
-    // BulkPropagator and interpolates between ticks on the render thread.
-    // Measured: 30k objects with 8 calculators is ~15 ms single-threaded, so
-    // 5 Hz costs roughly 7% of one core. See scripts/bench.mjs.
-    //
-    // Interpolating azimuth will need wrap-around care - lerping across
-    // 359°->1° sends the object the long way round the sky.
-    if (wall - lastPropagation >= propagationInterval) {
-      states = skyAt(entries, date);
-      scene.update(states);
-      lastPropagation = wall;
-    }
+    // Ticks come from the worker, running ahead of scene time; the GPU blends the
+    // two either side of now. Nothing here propagates.
+    const pair = stream.update(now, clock.generation, clock.timeRate);
+    if (pair) scene.showFrames(pair);
 
     // The readout only has to keep up with reading, not with the display.
     if (wall - lastHud >= 250) {
-      hud.update(date, states);
+      hud.update(clock.date, pair?.from ?? null);
       lastHud = wall;
     }
 
-    // A trail costs one propagation per sample, so recompute it only when the
-    // selection changes or enough scene time has passed for it to have moved.
+    // Recompute the trail when the selection changes, or when enough scene time has
+    // passed for it to have moved. One request at a time; a stale answer is dropped.
     const selected = hud.selectedIndex();
-    const entry = selected >= 0 ? entries[selected] : undefined;
-    if (entry && (selected !== lastTrailIndex || Math.abs(date.getTime() - lastTrailMs) > 20_000)) {
-      scene.setTrail(
-        trackOf(entry, date, TRAIL.pastMinutes, TRAIL.futureMinutes, TRAIL.stepSeconds)
-      );
-      lastTrailIndex = selected;
-      lastTrailMs = date.getTime();
+    if (selected >= 0 && !trailPending && (selected !== trailIndex || Math.abs(now - trailCentre) > 20_000)) {
+      trailPending = true;
+      const centre = now;
+      stream.requestTrack(selected, centre, TRAIL).then((directions) => {
+        trailPending = false;
+        if (selected !== hud.selectedIndex()) return;
+        scene.setTrail(directions);
+        trailIndex = selected;
+        trailCentre = centre;
+      });
     }
 
     scene.render();
+    debug?.frame(wall - lastWall, stream.getStats());
+    lastWall = wall;
     requestAnimationFrame(frame);
   }
 

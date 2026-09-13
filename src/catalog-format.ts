@@ -212,6 +212,39 @@ export function encodeCatalog(input: readonly OmmElements[], generatedAt: Date):
   return buf;
 }
 
+export interface CatalogHeader {
+  version: number;
+  count: number;
+  /** When the snapshot was fetched. */
+  generatedAt: Date;
+  namesSize: number;
+  fieldMask: number;
+  headerBytes: number;
+}
+
+/**
+ * Validate and read just the header - cheap, so the render thread can check it was
+ * handed a real catalogue before passing the bytes to the sky worker to decode.
+ */
+export function readCatalogHeader(buf: ArrayBuffer): CatalogHeader {
+  const header = new DataView(buf);
+  if (buf.byteLength < HEADER_BYTES || header.getUint32(0, true) !== MAGIC) {
+    throw new Error('catalog-format: not a packed catalogue (bad magic)');
+  }
+  const version = header.getUint16(4, true);
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`catalog-format: format version ${version}, this build reads ${FORMAT_VERSION}`);
+  }
+  return {
+    version,
+    count: header.getUint32(8, true),
+    namesSize: header.getUint32(12, true),
+    generatedAt: new Date(header.getFloat64(16, true)),
+    fieldMask: header.getUint16(24, true),
+    headerBytes: header.getUint16(6, true),
+  };
+}
+
 export function decodeCatalog(input: ArrayBuffer | Uint8Array): PackedCatalog {
   assertLittleEndian();
 
@@ -226,20 +259,9 @@ export function decodeCatalog(input: ArrayBuffer | Uint8Array): PackedCatalog {
     buf = input;
   }
 
-  const header = new DataView(buf);
-  if (buf.byteLength < HEADER_BYTES || header.getUint32(0, true) !== MAGIC) {
-    throw new Error('catalog-format: not a packed catalogue (bad magic)');
-  }
-  const version = header.getUint16(4, true);
-  if (version !== FORMAT_VERSION) {
-    throw new Error(`catalog-format: format version ${version}, this build reads ${FORMAT_VERSION}`);
-  }
-  const n = header.getUint32(8, true);
-  const namesSize = header.getUint32(12, true);
-  const generatedAt = new Date(header.getFloat64(16, true));
-  const mask = header.getUint16(24, true);
+  const { version, count: n, namesSize, generatedAt, fieldMask: mask, headerBytes } = readCatalogHeader(buf);
 
-  let offset = header.getUint16(6, true);
+  let offset = headerBytes;
   const section = <T extends { byteLength: number }>(make: (at: number) => T): T => {
     offset = align8(offset);
     const view = make(offset);

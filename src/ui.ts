@@ -1,7 +1,6 @@
 import { OBSERVER, CLOCK, HUD_ROWS, type Dataset } from './config';
 import type { Clock } from './clock';
-import type { CatalogEntry } from './catalog';
-import type { SkyState } from './sky';
+import type { SkyFrame } from './sky-frame';
 
 const deg = (rad: number) => (rad * 180) / Math.PI;
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -10,19 +9,22 @@ const POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'S
 const compass = (azDeg: number) => POINTS[Math.round((((azDeg % 360) + 360) % 360) / 22.5) % 16]!;
 
 export interface Hud {
-  update(date: Date, states: SkyState[]): void;
+  update(date: Date, frame: SkyFrame | null): void;
   selectedIndex(): number;
 }
 
 export interface HudSource {
+  /** Object names, indexed like every SkyFrame column. */
+  names: string[];
   dataset: Dataset;
   /** When the element sets were fetched. */
   generatedAt: Date;
 }
 
-export function createHud(root: HTMLElement, clock: Clock, catalog: CatalogEntry[], source: HudSource): Hud {
+export function createHud(root: HTMLElement, clock: Clock, source: HudSource): Hud {
   // Start on whatever is highest in the sky; the user can click any row.
   let selected = -1;
+  const { names } = source;
 
   const lat = `${Math.abs(OBSERVER.latitudeDeg).toFixed(3)}° ${OBSERVER.latitudeDeg >= 0 ? 'N' : 'S'}`;
   const lon = `${Math.abs(OBSERVER.longitudeDeg).toFixed(3)}° ${OBSERVER.longitudeDeg >= 0 ? 'E' : 'W'}`;
@@ -32,7 +34,7 @@ export function createHud(root: HTMLElement, clock: Clock, catalog: CatalogEntry
     <div class="panel">
       <h1>Birds Within</h1>
       <div class="sub">${OBSERVER.name} · ${lat} ${lon}</div>
-      <div class="sub">${catalog.length.toLocaleString('en')} objects · ${source.dataset} · elements as of ${asOf}</div>
+      <div class="sub">${names.length.toLocaleString('en')} objects · ${source.dataset} · elements as of ${asOf}</div>
       ${source.dataset === 'synthetic' ? '<div class="warn">synthetic · invented orbits, not real objects</div>' : ''}
       <div class="clock" id="t">--:--:--<small id="tl">&nbsp;</small></div>
       <div class="controls">
@@ -105,45 +107,56 @@ export function createHud(root: HTMLElement, clock: Clock, catalog: CatalogEntry
     if (row && row.index >= 0) selected = row.index;
   };
 
+  const above: number[] = [];
+
   return {
     selectedIndex: () => selected,
 
-    update(date, states) {
+    update(date, frame) {
       const iso = date.toISOString();
       tEl.firstChild!.textContent = `${iso.slice(11, 19)} UTC`;
       tlEl.textContent = `${iso.slice(0, 10)} · local ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+      if (!frame) return;
 
-      const above = states.filter((s) => s.elevation > 0).sort((a, b) => b.elevation - a.elevation);
-      const lit = above.filter((s) => s.shadow < 0.5).length;
+      // The horizon cull for the readout: only the few percent that are up get
+      // sorted, not the whole catalogue.
+      above.length = 0;
+      let lit = 0;
+      for (let i = 0; i < frame.count; i++) {
+        if (frame.range[i]! < 0 || frame.elevation[i]! <= 0) continue;
+        above.push(i);
+        if (frame.shadow[i]! < 0.5) lit++;
+      }
+      above.sort((a, b) => frame.elevation[b]! - frame.elevation[a]!);
 
       countEl.textContent =
         `${above.length} above the horizon · ${lit} sunlit` +
         `${above.length > HUD_ROWS ? ` · showing ${HUD_ROWS}` : ''}`;
 
-      if (selected === -1 && above[0]) selected = above[0].index;
+      if (selected === -1 && above[0] !== undefined) selected = above[0];
 
-      for (let i = 0; i < pool.length; i++) {
-        const row = pool[i]!;
-        const s = above[i];
+      for (let r = 0; r < pool.length; r++) {
+        const row = pool[r]!;
+        const i = above[r];
 
-        if (!s) {
+        if (i === undefined) {
           row.index = -1;
           row.tr.hidden = true;
           continue;
         }
 
         row.tr.hidden = false;
-        row.index = s.index;
+        row.index = i;
         row.tr.classList.add('up');
-        row.tr.classList.toggle('selected', s.index === selected);
+        row.tr.classList.toggle('selected', i === selected);
 
-        const elDeg = deg(s.elevation);
-        const azDeg = ((deg(s.azimuth) % 360) + 360) % 360;
-        row.td[0]!.textContent = catalog[s.index]?.name ?? '—';
-        row.td[1]!.textContent = `+${elDeg.toFixed(1)}°`;
+        const azDeg = ((deg(frame.azimuth[i]!) % 360) + 360) % 360;
+        const rangeRate = frame.rangeRate[i]!;
+        row.td[0]!.textContent = names[i] ?? '—';
+        row.td[1]!.textContent = `+${deg(frame.elevation[i]!).toFixed(1)}°`;
         row.td[2]!.textContent = `${azDeg.toFixed(0)}° ${compass(azDeg)}`;
-        row.td[3]!.textContent = `${s.range.toFixed(0)} km`;
-        row.td[4]!.textContent = `${s.rangeRate >= 0 ? '+' : ''}${s.rangeRate.toFixed(2)}`;
+        row.td[3]!.textContent = `${frame.range[i]!.toFixed(0)} km`;
+        row.td[4]!.textContent = `${rangeRate >= 0 ? '+' : ''}${rangeRate.toFixed(2)}`;
       }
     },
   };
