@@ -51,6 +51,28 @@ export const SKY = {
    * present but heavily dimmed.
    */
   showBelowHorizonDeg: -90,
+  /**
+   * Haze rising from the horizon: sky-coloured at the horizon, clear by `topDeg`, so
+   * objects come into view gradually as they climb instead of popping over the edge.
+   * It dims objects, their rings and trails; the graticule and compass labels stay
+   * above it, so the dome's structure reads all the way down.
+   */
+  haze: {
+    topDeg: 20,
+    /** 1 = objects at the horizon are fully hidden. */
+    horizonOpacity: 1,
+  },
+};
+
+/**
+ * Rings around the objects the readout lists. For now these are also the default
+ * voices of the sonification to come.
+ */
+export const HIGHLIGHT = {
+  /** Outer diameter, CSS pixels. Fixed on screen, whatever the object's range. */
+  diameterPx: 30,
+  strokePx: 1.5,
+  color: '#ffffff',
 };
 
 export const TRAIL = {

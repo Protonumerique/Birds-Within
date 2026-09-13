@@ -163,6 +163,18 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
 - `SKY.showBelowHorizonDeg` is −90: everything is drawn, below-horizon objects dimmed. The
   horizon cull applies to the CPU readers — the readout sorts only the ~6–9% that are up.
   Whether below-horizon objects belong in the image at all is a Step 3 decision.
+- **Haze** (`SKY.haze`): a sky-coloured band from the horizon to `topDeg`, opacity computed
+  per pixel from elevation, so objects come into view gradually as they climb. It is
+  colour-managed like the clear colour, so full haze is exactly empty sky, not a darker
+  band. Not everything being visible is deliberate.
+- **Highlight rings** (`HIGHLIGHT`): a white ring around each object the readout lists —
+  the top `HUD_ROWS` by elevation, and for now the default voices for Step 4. The rings
+  are a second, *indexed* draw of the points' own GPU buffers running the same
+  `BLEND_GLSL`, so a ring cannot drift from its object at any time rate; the only CPU work
+  is swapping 14 indices when membership changes.
+- **Render order is a design decision**, set in `RENDER_ORDER`: points, trail and rings
+  under the haze so they emerge together; graticule and compass labels above it so the
+  dome stays legible to the horizon.
 
 ### The tick stream
 

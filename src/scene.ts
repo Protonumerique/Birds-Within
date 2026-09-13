@@ -1,7 +1,18 @@
 import * as THREE from 'three';
-import { SKY } from './config';
+import { HIGHLIGHT, HUD_ROWS, SKY } from './config';
 import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
 import type { FramePair } from './sky-stream';
+
+/** The sky's own colour: the clear colour, and what the haze fades objects into. */
+const SKY_COLOR = 0x05070a;
+
+/**
+ * Draw order of the transparent layers, back to front. Objects, their rings and the
+ * trail sit under the haze, so they emerge together as they climb. The graticule and
+ * compass labels sit above it, so the structure of the dome stays legible right down
+ * to the horizon - move `graticule` below `haze` to let the haze swallow it too.
+ */
+const RENDER_ORDER = { points: 0, trail: 0, rings: 1, ground: 1, haze: 2, graticule: 3 } as const;
 
 /** Horizontal coordinates to scene space, scaled. The mapping itself lives in sky-frame.ts. */
 const scratch = [0, 0, 0];
@@ -11,27 +22,55 @@ export function altAzToVec3(azimuth: number, elevation: number, radius: number, 
 }
 
 /**
- * Every object is drawn from TWO propagation ticks at once and blended here, every
- * frame, by one uniform. Ticks arrive a few times a second; the CPU work per
- * rendered frame is setting `uT`. This is what removed the snapping.
+ * Every object is drawn from TWO propagation ticks at once and blended on the GPU,
+ * every frame, by one uniform. Ticks arrive a few times a second; the CPU work per
+ * rendered frame is setting `uT`.
  *
  * Blending unit direction vectors and renormalising, rather than azimuth and
  * elevation, sidesteps the 359° -> 1° wrap entirely: there is no seam in a vector.
- * Appearance - above or below the horizon, lit or eclipsed, size by range - is
- * decided from the blended values, so an object changes colour exactly where it
- * crosses the horizon on screen, not at the next tick.
+ *
+ * This chunk is shared by the points and by the highlight rings, which draw the same
+ * buffers through an index - so a ring can never drift from the object it encloses.
+ *
+ * position / aDir1  : unit direction from the observer at tick slot 0 / slot 1
+ * aState0 / aState1 : x = shadow fraction, y = range km (negative = no position)
  */
-const POINT_VERT = /* glsl */ `
-  // position / aDir1  : unit direction from the observer at tick slot 0 / slot 1
-  // aState0 / aState1 : x = shadow fraction, y = range km (negative = no position)
+const BLEND_GLSL = /* glsl */ `
   attribute vec3 aDir1;
   attribute vec2 aState0;
   attribute vec2 aState1;
 
   uniform float uT;
+  uniform float uSinLowest;
+
+  bool blendTicks(out vec3 dir, out float shadow, out float range) {
+    dir = vec3(0.0);
+    shadow = 0.0;
+    range = 0.0;
+    if (aState0.y < 0.0 || aState1.y < 0.0) return false;
+    vec3 blended = mix(position, aDir1, uT);
+    if (dot(blended, blended) < 1e-12) return false;
+    dir = normalize(blended);
+    if (dir.y < uSinLowest) return false;
+    shadow = mix(aState0.x, aState1.x, uT);
+    range = mix(aState0.y, aState1.y, uT);
+    return true;
+  }
+`;
+
+/** Outside clip space with zero size: the vertex draws nothing. */
+const HIDE_GLSL = /* glsl */ `gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0;`;
+
+/**
+ * Appearance - above or below the horizon, lit or eclipsed, size by range - is
+ * decided from the blended values, so an object changes colour exactly where it
+ * crosses the horizon on screen, not at the next tick.
+ */
+const POINT_VERT = /* glsl */ `
+  ${BLEND_GLSL}
+
   uniform float uRadius;
   uniform float uPixelRatio;
-  uniform float uSinLowest;
   uniform vec3 uColorLit;
   uniform vec3 uColorEclipsed;
   uniform vec3 uColorBelow;
@@ -39,24 +78,19 @@ const POINT_VERT = /* glsl */ `
   varying float vAlpha;
   varying vec3 vColor;
 
-  void hide() {
-    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    gl_PointSize = 0.0;
-    vAlpha = 0.0;
-    vColor = vec3(0.0);
-  }
-
   void main() {
-    if (aState0.y < 0.0 || aState1.y < 0.0) { hide(); return; }
-
-    vec3 blended = mix(position, aDir1, uT);
-    if (dot(blended, blended) < 1e-12) { hide(); return; }
-    vec3 dir = normalize(blended);
-    if (dir.y < uSinLowest) { hide(); return; }
+    vec3 dir;
+    float shadow;
+    float range;
+    if (!blendTicks(dir, shadow, range)) {
+      ${HIDE_GLSL}
+      vAlpha = 0.0;
+      vColor = vec3(0.0);
+      return;
+    }
 
     bool above = dir.y >= 0.0;
-    bool lit = mix(aState0.x, aState1.x, uT) < 0.5;
-    float range = mix(aState0.y, aState1.y, uT);
+    bool lit = shadow < 0.5;
 
     vColor = above ? (lit ? uColorLit : uColorEclipsed) : uColorBelow;
     vAlpha = above ? (lit ? 1.0 : 0.6) : 0.3;
@@ -84,6 +118,79 @@ const POINT_FRAG = /* glsl */ `
   }
 `;
 
+const RING_VERT = /* glsl */ `
+  ${BLEND_GLSL}
+
+  uniform float uRadius;
+  uniform float uPixelRatio;
+  uniform float uRingPx;
+
+  varying float vSizePx;
+
+  void main() {
+    vec3 dir;
+    float shadow;
+    float range;
+    if (!blendTicks(dir, shadow, range)) {
+      ${HIDE_GLSL}
+      vSizePx = 0.0;
+      return;
+    }
+    vSizePx = uRingPx * uPixelRatio;
+    gl_PointSize = vSizePx;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
+  }
+`;
+
+const RING_FRAG = /* glsl */ `
+  uniform vec3 uRingColor;
+  uniform float uStrokePx;
+  uniform float uPixelRatio;
+
+  varying float vSizePx;
+
+  void main() {
+    // Work in device pixels so the stroke is the same width at any size, with a
+    // one-pixel antialiased edge and a pixel of margin inside the sprite.
+    float dist = length(gl_PointCoord - vec2(0.5)) * vSizePx;
+    float stroke = uStrokePx * uPixelRatio;
+    float ringRadius = 0.5 * vSizePx - 0.5 * stroke - 1.0;
+    float alpha = 1.0 - smoothstep(-0.5, 0.5, abs(dist - ringRadius) - 0.5 * stroke);
+    if (alpha <= 0.0) discard;
+    gl_FragColor = vec4(uRingColor, alpha);
+  }
+`;
+
+/**
+ * The haze is a band of sphere from the horizon to `topDeg`, sky-coloured, with its
+ * opacity computed per pixel from the true elevation - so the gradient is smooth
+ * however coarse the geometry.
+ */
+const HAZE_VERT = /* glsl */ `
+  varying vec3 vDirection;
+  void main() {
+    vDirection = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const HAZE_FRAG = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uOpacity;
+  uniform float uTop;
+
+  varying vec3 vDirection;
+
+  void main() {
+    float elevation = asin(clamp(normalize(vDirection).y, -1.0, 1.0));
+    float t = clamp(elevation / uTop, 0.0, 1.0);
+    gl_FragColor = vec4(uColor, uOpacity * (1.0 - smoothstep(0.0, 1.0, t)));
+    // Colour-managed like the clear colour, so a fully hazed patch is exactly the
+    // sky rather than a slightly darker band.
+    #include <colorspace_fragment>
+  }
+`;
+
 /** Sunlit, above horizon: what you could actually see with the naked eye. */
 const COLOR_LIT = new THREE.Color('#fff2d6');
 /** In Earth's shadow: present, tracked, invisible to the eye. */
@@ -104,6 +211,7 @@ export class SkyScene {
 
   private slots: [TickSlot, TickSlot];
   readonly points: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  readonly rings: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial>;
   readonly uniforms = {
     uT: { value: 0 },
     uRadius: { value: SKY.radius },
@@ -113,6 +221,9 @@ export class SkyScene {
     uColorEclipsed: { value: COLOR_ECLIPSED },
     uColorBelow: { value: COLOR_BELOW },
   };
+
+  private highlightIndex: THREE.BufferAttribute;
+  private highlightCount = 0;
 
   private trail: THREE.Line;
   private trailPositions: Float32Array;
@@ -124,7 +235,7 @@ export class SkyScene {
   constructor(canvas: HTMLCanvasElement, count: number, trailCapacity = 4096) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.setClearColor(0x05070a, 1);
+    this.renderer.setClearColor(SKY_COLOR, 1);
     this.uniforms.uPixelRatio.value = this.renderer.getPixelRatio();
 
     // Wide by default: the piece is about how much is up there, so seeing a large
@@ -132,8 +243,11 @@ export class SkyScene {
     this.camera = new THREE.PerspectiveCamera(95, 1, 0.1, SKY.radius * 4);
     this.camera.position.set(0, 0, 0);
 
-    this.scene.add(this.buildGraticule());
+    const graticule = this.buildGraticule();
+    graticule.renderOrder = RENDER_ORDER.graticule;
+    this.scene.add(graticule);
     this.scene.add(this.buildGround());
+    this.scene.add(this.buildHaze());
 
     // --- satellites ---------------------------------------------------------
     const makeSlot = (): TickSlot => {
@@ -148,16 +262,21 @@ export class SkyScene {
     };
     this.slots = [makeSlot(), makeSlot()];
 
-    const geom = new THREE.BufferGeometry();
-    // three.js sizes the draw from `position`, so slot 0's directions go there.
-    geom.setAttribute('position', this.slots[0].direction);
-    geom.setAttribute('aDir1', this.slots[1].direction);
-    geom.setAttribute('aState0', this.slots[0].state);
-    geom.setAttribute('aState1', this.slots[1].state);
-    geom.setDrawRange(0, count);
+    // Both geometries hold the SAME attribute objects, so three.js uploads each tick
+    // once and the rings read exactly the buffers the points do.
+    const withTicks = (geom: THREE.BufferGeometry) => {
+      // three.js sizes a non-indexed draw from `position`, so slot 0's directions go there.
+      geom.setAttribute('position', this.slots[0].direction);
+      geom.setAttribute('aDir1', this.slots[1].direction);
+      geom.setAttribute('aState0', this.slots[0].state);
+      geom.setAttribute('aState1', this.slots[1].state);
+      return geom;
+    };
 
+    const pointsGeom = withTicks(new THREE.BufferGeometry());
+    pointsGeom.setDrawRange(0, count);
     this.points = new THREE.Points(
-      geom,
+      pointsGeom,
       new THREE.ShaderMaterial({
         vertexShader: POINT_VERT,
         fragmentShader: POINT_FRAG,
@@ -168,7 +287,35 @@ export class SkyScene {
       })
     );
     this.points.frustumCulled = false;
+    this.points.renderOrder = RENDER_ORDER.points;
     this.scene.add(this.points);
+
+    // --- highlight rings ----------------------------------------------------
+    const ringsGeom = withTicks(new THREE.BufferGeometry());
+    this.highlightIndex = new THREE.BufferAttribute(new Uint32Array(HUD_ROWS), 1).setUsage(THREE.DynamicDrawUsage);
+    ringsGeom.setIndex(this.highlightIndex);
+    ringsGeom.setDrawRange(0, 0);
+    this.rings = new THREE.Points(
+      ringsGeom,
+      new THREE.ShaderMaterial({
+        vertexShader: RING_VERT,
+        fragmentShader: RING_FRAG,
+        uniforms: {
+          uT: this.uniforms.uT,
+          uSinLowest: this.uniforms.uSinLowest,
+          uRadius: this.uniforms.uRadius,
+          uPixelRatio: this.uniforms.uPixelRatio,
+          uRingPx: { value: HIGHLIGHT.diameterPx },
+          uStrokePx: { value: HIGHLIGHT.strokePx },
+          uRingColor: { value: new THREE.Color(HIGHLIGHT.color) },
+        },
+        transparent: true,
+        depthWrite: false,
+      })
+    );
+    this.rings.frustumCulled = false;
+    this.rings.renderOrder = RENDER_ORDER.rings;
+    this.scene.add(this.rings);
 
     // --- trail --------------------------------------------------------------
     this.trailCapacity = trailCapacity;
@@ -181,6 +328,7 @@ export class SkyScene {
       new THREE.LineBasicMaterial({ color: 0x7fa6bf, transparent: true, opacity: 0.6 })
     );
     this.trail.frustumCulled = false;
+    this.trail.renderOrder = RENDER_ORDER.trail;
     this.scene.add(this.trail);
 
     this.attachLook(canvas);
@@ -214,6 +362,26 @@ export class SkyScene {
 
     // uT always runs slot 0 -> slot 1, whichever of them is older.
     this.uniforms.uT.value = fromSlot === 0 ? t : 1 - t;
+  }
+
+  /**
+   * Ring these objects. Indices into the frame columns; only a change reaches the
+   * GPU, and it is at most HUD_ROWS integers.
+   */
+  setHighlights(indices: readonly number[]) {
+    const index = this.highlightIndex.array as Uint32Array;
+    const n = Math.min(indices.length, index.length);
+    let changed = n !== this.highlightCount;
+    for (let i = 0; i < n; i++) {
+      if (index[i] !== indices[i]) {
+        index[i] = indices[i]!;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this.highlightCount = n;
+    this.highlightIndex.needsUpdate = true;
+    this.rings.geometry.setDrawRange(0, n);
   }
 
   private upload(index: number, frame: SkyFrame): number {
@@ -325,7 +493,34 @@ export class SkyScene {
       })
     );
     mesh.rotation.x = -Math.PI / 2;
-    mesh.renderOrder = 1;
+    mesh.renderOrder = RENDER_ORDER.ground;
+    return mesh;
+  }
+
+  /** Sky-coloured haze from the horizon up to SKY.haze.topDeg. */
+  private buildHaze(): THREE.Mesh {
+    const top = THREE.MathUtils.degToRad(SKY.haze.topDeg);
+    // SphereGeometry measures theta down from +Y, so the band from elevation 0 to `top`
+    // starts at theta = 90° - top and spans `top`.
+    const geometry = new THREE.SphereGeometry(SKY.radius * 0.97, 128, 16, 0, Math.PI * 2, Math.PI / 2 - top, top);
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.ShaderMaterial({
+        vertexShader: HAZE_VERT,
+        fragmentShader: HAZE_FRAG,
+        uniforms: {
+          uColor: { value: new THREE.Color(SKY_COLOR) },
+          uOpacity: { value: SKY.haze.horizonOpacity },
+          uTop: { value: top },
+        },
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.BackSide,
+      })
+    );
+    mesh.frustumCulled = false;
+    mesh.renderOrder = RENDER_ORDER.haze;
     return mesh;
   }
 

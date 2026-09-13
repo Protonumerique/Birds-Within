@@ -11,6 +11,11 @@ const compass = (azDeg: number) => POINTS[Math.round((((azDeg % 360) + 360) % 36
 export interface Hud {
   update(date: Date, frame: SkyFrame | null): void;
   selectedIndex(): number;
+  /**
+   * The objects the readout currently lists, highest first - ringed on the sky, and
+   * for now the default voices of the sonification to come.
+   */
+  listed(): readonly number[];
 }
 
 export interface HudSource {
@@ -108,9 +113,11 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
   };
 
   const above: number[] = [];
+  const listed: number[] = [];
 
   return {
     selectedIndex: () => selected,
+    listed: () => listed,
 
     update(date, frame) {
       const iso = date.toISOString();
@@ -129,6 +136,9 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
       }
       above.sort((a, b) => frame.elevation[b]! - frame.elevation[a]!);
 
+      listed.length = 0;
+      for (let r = 0; r < HUD_ROWS && r < above.length; r++) listed.push(above[r]!);
+
       countEl.textContent =
         `${above.length} above the horizon · ${lit} sunlit` +
         `${above.length > HUD_ROWS ? ` · showing ${HUD_ROWS}` : ''}`;
@@ -137,7 +147,7 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
 
       for (let r = 0; r < pool.length; r++) {
         const row = pool[r]!;
-        const i = above[r];
+        const i = listed[r];
 
         if (i === undefined) {
           row.index = -1;

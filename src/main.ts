@@ -74,6 +74,9 @@ async function main() {
     // The readout only has to keep up with reading, not with the display.
     if (wall - lastHud >= 250) {
       hud.update(clock.date, pair?.from ?? null);
+      // The listed objects are ringed on the sky; the rings follow the GPU blend, so
+      // only a change of membership has to reach the scene.
+      scene.setHighlights(hud.listed());
       lastHud = wall;
     }
 
