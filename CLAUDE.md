@@ -187,7 +187,26 @@ If you switch to `DopplerFactorCalculator`, verify it against the differenced va
       sunlit/eclipsed distinction. Validated against Python. ← *you are here*
 - [ ] **Step 1 — data pipeline.** Packed binary catalogue instead of raw TLE text (~5–6 MB
       of 3LE for 30k objects → ~1–2 MB gzipped). Versioned, with epoch timestamps.
-      Enable the `active` fetch in the Action.
+      **Decided, not yet built:**
+      - **Upstream is OMM JSON, not TLE.** satellite.js v7 exports
+        `json2satrec(jsonobj: OMMJsonObject, opsmode?)`, so a satrec can be built from
+        numeric elements with no TLE text at runtime. `fetch-tle.mjs` moves to CelesTrak
+        `FORMAT=json`; the binary carries OMM fields directly. This kills the
+        `twoline2satrec` string-parsing cost for 30k objects and packs better than
+        fixed-width text. It is a wide change — the fetch script, the on-disk format,
+        `src/tle.ts` and `public/data/SOURCES.md` all move together.
+      - **Ship both datasets behind a switch in `config.ts`**, defaulting to `active`
+        (~11k) with the full catalogue (~30k, incl. debris) selectable. Which of the two
+        images the piece wants is an aesthetic question, so make it answerable by
+        looking rather than by rebuilding.
+      - **The validation fixture does not follow.** `scripts/fixtures/validation.tle`
+        stays TLE text and stays frozen, because `reference.json` was computed from
+        those exact lines. The check validates the coordinate and time chain, which is
+        independent of how the catalogue is transported. Do not "modernise" it to OMM.
+      - **Verify the binary's `Content-Type` on the live site, early.** GitHub Pages
+        guesses MIME from the extension, and a wrong guess is the classic
+        works-locally-breaks-live failure. `curl -I` the deployed asset before building
+        anything on top of it.
 - [ ] **Step 2 — scale.** `BulkPropagator` in a Web Worker, full catalogue, horizon cull
       (only ~3–8% of the catalogue is above the horizon at once), interpolation between
       propagation ticks. Loading state for the ~30k `twoline2satrec` inits.
