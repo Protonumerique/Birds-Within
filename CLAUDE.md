@@ -91,6 +91,22 @@ render at 60 fps, interpolate between. **Interpolating azimuth needs wrap-around
 sun position — reads from it. Mixing in a bare `new Date()` anywhere else is how a
 scrubbed timeline silently desynchronises from what is drawn.
 
+## Deployment
+
+Pages **Source must be "GitHub Actions"**, not "Deploy from a branch". Serving from a
+branch publishes the repo as-is, so `index.html` asks the browser for `/src/main.ts` —
+a TypeScript file no browser can execute. The symptom is a blank page that works
+perfectly in `npm run dev`. `.github/workflows/deploy.yml` builds and publishes `dist/`.
+
+`base` in `vite.config.ts` is `'./'` — relative, so one build works both at a domain root
+and under `/birds-within/`. With `base: '/'` the built page requests `/assets/…`, which
+404s on a project page: the same blank screen. **Do not change it back to `'/'`.**
+
+A commit made by the TLE workflow using `GITHUB_TOKEN` does not trigger `push` events —
+GitHub suppresses that to prevent workflow loops — so `deploy.yml` also listens for that
+workflow completing. Without it, refreshed element sets would sit in the repo unpublished
+until the next human push.
+
 ## Correctness
 
 The coordinate and time chain is the easiest thing to get subtly and invisibly wrong.
@@ -155,6 +171,16 @@ If you switch to `DopplerFactorCalculator`, verify it against the differenced va
 - The readout lists only the highest `HUD_ROWS` objects above the horizon, refreshed at
   4 Hz. At catalogue scale there is no listing the whole thing, and rebuilding rows every
   frame is wasted DOM work.
+
+## Licence
+
+Code is **AGPL-3.0-or-later** (AGPL, not GPL: this is a web app, and plain GPL's
+obligations do not trigger on hosting). The `LICENSE` file is added through GitHub's
+license-template picker so the text is canonical.
+
+The element sets in `public/data/` are not covered by it — their origin and CelesTrak's
+terms are documented in `public/data/SOURCES.md`. Keep the fetch-and-cache arrangement
+intact in any fork; pointing browsers straight at CelesTrak earns 403s and an IP block.
 
 ## Commands
 

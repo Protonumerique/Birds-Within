@@ -1,10 +1,13 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  // Deploying to a subdomain root, so '/' is correct. If this ever ends up served
-  // from a subpath (e.g. GitHub Pages project sites), change this to '/<repo>/'
-  // or asset URLs will 404 in production while working fine in dev.
-  base: '/',
+  // Relative, so the same build works both at a domain root
+  // (birds.protonumerique.net/) and under a subpath
+  // (protonumerique.github.io/birds-within/). With base: '/' the built index.html
+  // asks for /assets/... which 404s on a project page - a blank screen that works
+  // perfectly in dev. `import.meta.env.BASE_URL` becomes './', so the catalogue
+  // fetch resolves relative to the page too. Do not "fix" this back to '/'.
+  base: './',
 
   server: {
     host: true,

@@ -1,0 +1,57 @@
+name: Deploy to GitHub Pages
+
+# GitHub Pages serving "from a branch" would publish the repository as-is - which
+# means index.html asking the browser for /src/main.ts, a TypeScript file no browser
+# can execute. Blank page. The site has to be BUILT first, and dist/ is gitignored,
+# so the build has to happen here.
+#
+# Requires: Settings -> Pages -> Source = "GitHub Actions" (not "Deploy from a branch").
+
+on:
+  push:
+    branches: [main]
+  # Refreshed element sets should go live too. A commit made by the TLE workflow
+  # using GITHUB_TOKEN does NOT trigger `push`, by design, to prevent workflow
+  # loops - so watch for that workflow finishing instead.
+  workflow_run:
+    workflows: ['Update TLE snapshot']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
