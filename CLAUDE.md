@@ -103,14 +103,35 @@ and under `/birds-within/`. With `base: '/'` the built page requests `/assets/�
 404s on a project page: the same blank screen. **Do not change it back to `'/'`.**
 
 The site lives at **birds.protonumerique.net**, a DNS `CNAME` to
-`protonumerique.github.io`. With Pages built by Actions, the published artifact must
-carry a `CNAME` file or the custom domain is not asserted — which is what `public/CNAME`
-is for, and why Vite copies it into `dist/`. It was briefly **empty**, which asserts
-nothing: the domain stayed configured in Settings (so `protonumerique.github.io/...`
-still redirected) but no Let's Encrypt certificate was ever issued, and the site answered
-on `http://` while `https://` failed the TLS handshake against GitHub's `*.github.io`
-wildcard. A zero-byte `CNAME` is invisible in a diff. If HTTPS breaks, check that file
-has a domain in it before suspecting DNS.
+`protonumerique.github.io`, served over HTTPS with **Enforce HTTPS** on, so both
+`http://` and `protonumerique.github.io/birds-within/` 301 to the canonical origin.
+
+With Pages built by Actions the custom domain lives in **repo Settings**, and the
+artifact's `CNAME` file is not strictly required. Keep `public/CNAME` populated anyway
+so the repo and Settings cannot disagree — `dist/CNAME` falls out of Vite copying
+`public/`. The one state to avoid is the **zero-byte** file this repo carried for a
+while: neither absent (Settings wins) nor present (they agree), and invisible in a diff.
+
+**If HTTPS is broken, the fix is almost certainly Settings, not DNS or that file.** The
+certificate went unissued here for days. Everything people normally suspect was checked
+and was fine: the `CNAME` record pointed at `protonumerique.github.io`; CAA resolved
+through it to GitHub's own set, which permits `letsencrypt.org`; the
+`_github-pages-challenge-Protonumerique` TXT was present; and no other repo claimed the
+domain. Populating `public/CNAME` and redeploying changed nothing, because a deploy does
+not retrigger certificate issuance.
+
+What worked: **Settings → Pages → Custom domain → Remove, wait a minute, re-enter it,
+Save.** That refiles the DNS check and the certificate request, and the Let's Encrypt
+cert appeared within the hour. There is no other retry control. Two cautions learned the
+hard way — a 500 on that settings page means the backend is mid-reconcile, so wait rather
+than clicking again; and after ticking **Enforce HTTPS** the redirect takes a few minutes
+to reach GitHub's edge, so an immediate `curl` showing plain `http://` is not a failure.
+
+DNS is at manitu (`dns01/dns02.manitu.net`). The zone's default TTL is **86400**, from
+the SOA, which is what a blank TTL field inherits; the `birds` record now sets **300**
+explicitly. That matters only when a record *changes* — a long TTL means every correction
+takes up to a day to become visible, which is what made this painful to iterate on.
+Nothing is wrong with a cached 86400 answer while the record is correct.
 
 A commit made by the TLE workflow using `GITHUB_TOKEN` does not trigger `push` events —
 GitHub suppresses that to prevent workflow loops — so `deploy.yml` also listens for that
