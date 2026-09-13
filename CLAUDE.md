@@ -18,6 +18,24 @@ It is an artwork, not a tracker. stuff-in-orbit, satellitemap and KeepTrack alre
 exist and are excellent. Do not drift toward feature parity with them — no search, no
 object info panels, no orbital element readouts beyond what serves the image.
 
+### No tags on the sky
+
+Decided 2026-09-13. Nothing textual is drawn on or beside objects in the sky: no name
+tags, no hover tooltips, no floating data panels that follow an object. The sky carries
+visual marks only. Text belongs in the lower panel, which is meant to stay uncluttered
+and to hold data and, later, controls such as sound.
+
+This constrains the features still to come:
+
+- **Linking sky and names is wanted, but visually.** A ringed object and its row in the
+  list should be connectable at a glance — through the marks themselves (a ring
+  brightening, a row lighting up), not by printing the name next to the object. The
+  approach is not chosen yet.
+- **Mouse interaction** (hunting objects, selecting them) is under consideration. Its
+  response must be part of the image or the sound — a ring, a trail appearing, a voice
+  soloing — never a data readout at the cursor. Any data it surfaces goes to the lower
+  panel.
+
 ## Locked-in direction
 
 | | |
@@ -25,6 +43,7 @@ object info panels, no orbital element readouts beyond what serves the image.
 | **Framing** | Observer looking up, rendered abstractly. **No Earth geometry, no globe, no map.** The scene is a hemisphere in horizontal (alt/az) coordinates, camera at the observer. |
 | **Scope** | **Everything CelesTrak publishes: ~21k objects** — every payload, and ~3k of the ~15k debris on orbit. The full ~35k catalogue exists only on Space-Track, which a public page cannot redistribute. See *The catalogue* below. |
 | **Sound** | Phase 2. The data model already emits what it needs. |
+| **Data on screen** | **No tags, labels or info panels on the sky.** Names and numbers live in the lower panel, which also becomes the home for controls (sound, likely). The sky carries only visual marks — rings, trails, haze. See *No tags on the sky* below. |
 | **Hosting** | Standalone subdomain, own repo. |
 | **Stack** | Vite + TypeScript + three.js + satellite.js v7. No framework. |
 
