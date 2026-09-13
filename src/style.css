@@ -175,6 +175,13 @@ td.name {
   color: #e2957f;
 }
 
+/* Shown whenever the sky on screen is invented rather than real. */
+.warn {
+  margin-top: 4px;
+  color: #e2c27f;
+  letter-spacing: 0.06em;
+}
+
 @media (max-width: 620px) {
   .clock {
     font-size: 17px;

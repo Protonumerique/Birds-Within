@@ -3,3 +3,9 @@ dist/
 .DS_Store
 *.local
 .vite/
+
+# The real catalogue is fetched at build time and never committed - see deploy.yml.
+# public/data/synthetic.bin IS committed: it is the offline fallback.
+.catalog-cache/
+public/data/active.bin
+public/data/full.bin

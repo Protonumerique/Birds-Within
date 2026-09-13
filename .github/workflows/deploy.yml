@@ -1,31 +1,40 @@
 name: Deploy to GitHub Pages
 
+# Builds the site AND the catalogue it shows, then publishes both.
+#
 # GitHub Pages serving "from a branch" would publish the repository as-is - which
 # means index.html asking the browser for /src/main.ts, a TypeScript file no browser
 # can execute. Blank page. The site has to be BUILT first, and dist/ is gitignored,
 # so the build has to happen here.
 #
 # Requires: Settings -> Pages -> Source = "GitHub Actions" (not "Deploy from a branch").
+#
+# The catalogue is fetched here, at build time, and never committed. Packed
+# snapshots are ~1.5 MB of binary per refresh and delta poorly; committed four
+# times a day they would add on the order of a gigabyte or two of history a year,
+# which every clone would download. The raw CelesTrak JSON rides from one run to the
+# next in the Actions cache instead.
 
 on:
   push:
     branches: [main]
-  # Refreshed element sets should go live too. A commit made by the TLE workflow
-  # using GITHUB_TOKEN does NOT trigger `push`, by design, to prevent workflow
-  # loops - so watch for that workflow finishing instead.
-  workflow_run:
-    workflows: ['Update TLE snapshot']
-    types: [completed]
+  # CelesTrak refreshes GP data every 2 hours. Every 6 hours is inside their terms
+  # and far more often than accuracy needs - elements degrade over days.
+  schedule:
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write # for the keepalive step at the end of `build`
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Queue rather than cancel: a cancelled run can discard a CelesTrak download that
+  # cannot be repeated for two hours.
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -39,12 +48,57 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # The newest snapshot any earlier run saved. Keys are unique per run, so the
+      # exact key never matches and restore-keys resolves to the most recent one.
+      - name: Restore catalogue cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .catalog-cache
+          key: celestrak-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: celestrak-
+
+      # Skips any dataset fetched under 2 hours ago and keeps the cached copy when
+      # CelesTrak refuses, so a burst of pushes costs CelesTrak nothing.
+      - name: Fetch catalogue
+        run: node scripts/fetch-catalog.mjs
+
+      # Saved immediately, before anything else can fail, so a broken build never
+      # throws away a download that cannot be repeated for two hours.
+      - name: Save catalogue cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .catalog-cache
+          key: celestrak-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Pack catalogue
+        run: node scripts/pack-catalog.mjs
+
+      # A truncated download, stale elements or a codec mismatch fails here, and the
+      # previous deployment stays live.
+      - name: Check catalogue
+        run: node scripts/check-catalog.mjs
+
+      - run: npm run validate
       - run: npm run build
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+
+      # GitHub disables scheduled workflows in a public repository after 60 days
+      # without repository activity. The old TLE workflow's commits kept that timer
+      # reset as a side effect; build-time fetching makes no commits, so an untouched
+      # piece would quietly stop refreshing after two months. Re-enabling through the
+      # API is the widely used keepalive. Whether it resets the counter can only be
+      # proven at day 60 - if refreshes ever stop, check the Actions tab first.
+      - name: Keep the schedule alive
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/${{ github.repository }}/actions/workflows/deploy.yml/enable"
 
   deploy:
     needs: build

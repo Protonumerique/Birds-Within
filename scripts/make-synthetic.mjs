@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+/**
+ * Generate public/data/synthetic.bin: ~1450 INVENTED orbits across plausible LEO
+ * shells, in the packed catalogue format.
+ *
+ * It is the development fallback and nothing else. Nothing in it is a real object,
+ * and no conclusion about where anything actually is may be drawn from it. The dev
+ * server loads it only when the real catalogue has not been fetched, and the HUD
+ * says "synthetic" whenever it is on screen. Production never falls back to it.
+ *
+ * Deterministic and committed, so a fresh clone runs offline with no network and
+ * no generation step. Drag terms are zero so the orbits never decay: this file has
+ * to look like a sky for years, not for the week real elements are good for.
+ *
+ * Ported from the original Python generator, which could not run everywhere the
+ * project is developed. Same shells, same construction; a different random stream,
+ * so the individual orbits differ.
+ *
+ *   npm run make:synthetic
+ */
+
+import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { encodeCatalog } from '../src/catalog-format.ts';
+import { ROOT } from './catalog-sources.mjs';
+
+const MU = 398600.4418; // km^3/s^2
+const R_EARTH = 6378.137; // km
+const EPOCH = new Date(Date.UTC(2026, 8, 12));
+
+/** mulberry32: small, seedable, identical on every platform. */
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const random = seeded(20260912);
+const uniform = (lo, hi) => lo + (hi - lo) * random();
+const wrap360 = (deg) => ((deg % 360) + 360) % 360;
+/** The packed format stores angles to 4 decimals and ecc / mean motion to 8, exactly. */
+const fixed = (x, digits) => Number(x.toFixed(digits));
+
+/** Revolutions per day for a circular orbit at this altitude. */
+const meanMotion = (altitudeKm) => 86400 / (2 * Math.PI * Math.sqrt((R_EARTH + altitudeKm) ** 3 / MU));
+
+// count, altitude km, inclination deg, name
+const SHELLS = [
+  [700, 550, 53.0, 'SHELL-A'], // dense low-inclination shell
+  [250, 570, 70.0, 'SHELL-B'],
+  [200, 1200, 87.9, 'SHELL-C'], // near-polar
+  [150, 800, 98.6, 'SSO'], // sun-synchronous
+  [200, null, null, 'SYNTH DEB'], // broad spread; named so kindFromName reads it as debris
+];
+
+const records = [];
+let catnr = 90000;
+
+for (const [count, altitude, inclination, label] of SHELLS) {
+  // Walker-like: spread planes in RAAN, spread objects within each plane.
+  const planes = Math.max(1, Math.round(Math.sqrt(count)));
+  const perPlane = Math.max(1, Math.floor(count / planes));
+
+  for (let p = 0; p < planes; p++) {
+    for (let k = 0; k < perPlane; k++) {
+      catnr++;
+      const alt = altitude ?? uniform(380, 1400);
+      const inc = inclination ?? uniform(0, 105);
+
+      records.push({
+        OBJECT_NAME: `${label} ${catnr}`,
+        NORAD_CAT_ID: catnr,
+        EPOCH: EPOCH.toISOString(),
+        INCLINATION: fixed(inc, 4),
+        RA_OF_ASC_NODE: fixed(wrap360((p / planes) * 360 + uniform(-1.5, 1.5)), 4) % 360,
+        ARG_OF_PERICENTER: fixed(uniform(0, 360), 4) % 360,
+        MEAN_ANOMALY: fixed(wrap360((k / perPlane) * 360 + p * 11 + uniform(-1.5, 1.5)), 4) % 360,
+        ECCENTRICITY: fixed(uniform(2e-7, 9e-5), 8),
+        MEAN_MOTION: fixed(meanMotion(alt) * uniform(0.9995, 1.0005), 8),
+        BSTAR: 0,
+        MEAN_MOTION_DOT: 0,
+        MEAN_MOTION_DDOT: 0,
+      });
+    }
+  }
+}
+
+const bytes = new Uint8Array(encodeCatalog(records, EPOCH));
+await writeFile(resolve(ROOT, 'public/data/synthetic.bin'), bytes);
+console.log(`synthetic.bin: ${records.length} invented objects, ${Math.round(bytes.length / 1024)} KB`);

@@ -1,63 +1,91 @@
-# Where the element sets in this directory come from
+# Where the element sets come from
 
-The code in this repository is AGPL-3.0-or-later. **The orbital element sets in this
-directory are not**, and nothing here relicenses them. This file records where each
-one came from and what the source asks of anyone redistributing it.
+The code in this repository is AGPL-3.0-or-later. **The orbital element sets the site
+publishes are not**, and nothing here relicenses them. This file records where each one
+comes from and what the source asks of anyone redistributing it.
 
 ## The files
 
-| file | origin | real? |
-|---|---|---|
-| `stations.tle` | CelesTrak GP API, `GROUP=stations` | **yes** — live data |
-| `synthetic-leo.tle` | `scripts/make_placeholder_tle.py` | **no** — entirely generated |
+| file | origin | real? | in git? |
+|---|---|---|---|
+| `active.bin` | CelesTrak GP, `GROUP=active` | **yes** | no — built at deploy |
+| `full.bin` | union of every CelesTrak GP dataset | **yes** | no — built at deploy |
+| `synthetic.bin` | `scripts/make-synthetic.mjs` | **no** — invented | yes |
 
-`stations.tle` began life as a placeholder, but the scheduled Action has since
-replaced it with genuine CelesTrak data. It carries a header line naming the query
-and the retrieval time. Do not run `make_placeholder_tle.py` against it again.
+`active.bin` and `full.bin` are CelesTrak's OMM JSON re-encoded, without loss, into the
+binary format described at the top of `src/catalog-format.ts`. The numbers are
+CelesTrak's; every deploy verifies that each object decodes to exactly the satrec its
+original record gives. Each file's header records when it was fetched, and the page shows
+it.
 
-`synthetic-leo.tle` is ~1450 **invented** orbits spread across plausible LEO shells,
-with valid line checksums so parsers accept them. It exists so the dome shows
-something like the density the piece is about while running offline, and because
-about 6% of it is above the horizon at any instant — which is what the real
-catalogue does. It is not a catalogue of anything. Nothing in it corresponds to a
-real object, and no conclusion about where anything actually is may be drawn from
-it. `npm run fetch:tle` replaces it with live data.
+`synthetic.bin` is ~1,450 **invented** orbits across plausible LEO shells. Nothing in it
+corresponds to a real object, and no conclusion about where anything actually is may be
+drawn from it. It exists so development works offline: the dev server shows it only when
+the real catalogue has not been fetched, and labels it on screen. The published site never
+uses it.
 
-A third file, `scripts/fixtures/validation.tle`, is deliberately **not** in this
-directory. See the header inside it.
+`scripts/fixtures/validation.tle`, the frozen input to the propagation check, is not
+published at all. See the header inside it.
+
+## What CelesTrak publishes — and what it does not
+
+CelesTrak has no single query for the whole catalogue. `full.bin` is the union of every GP
+dataset that adds objects (`scripts/catalog-sources.mjs` is the authoritative list):
+
+| dataset | objects, 2026-09-13 |
+|---|---|
+| `GROUP=active` | 16,563 payloads |
+| `GROUP=analyst` | 566 tracked, not yet identified |
+| `GROUP=last-30-days` | 255 |
+| `SPECIAL=GPZ-PLUS` | 1,728 — the GEO protected zone, incl. its rocket bodies and debris |
+| `SPECIAL=DECAYING` | 95 |
+| `GROUP=fengyun-1c-debris` | 1,969 — 2007 anti-satellite test |
+| `GROUP=cosmos-2251-debris` | 585 — 2009 collision |
+| `GROUP=iridium-33-debris` | 110 — the same collision |
+| **union** | **20,933** |
+
+CelesTrak's own SATCAT counted **35,093** objects on orbit the same day. So the image
+contains every payload, but only about 3,000 of the ~15,000 debris fragments and rocket
+bodies up there — nearly all from those three breakups. The rest are not published as GP
+data. The sky in this piece is denser than it looks, and the real one denser still.
+
+Since 2026-07-11 new objects carry 6-digit catalog numbers and have no TLE at all, which is
+why this project reads OMM.
 
 ## CelesTrak
 
-<https://celestrak.org/> — Dr T.S. Kelso's service, the canonical free source of
-general perturbations data, derived from the US Space Force's public catalogue.
-Orbital elements produced by a US government body are not themselves copyrightable,
-but CelesTrak's *service* is a private one run at someone's expense, and its terms
-are enforced technically rather than legally:
+<https://celestrak.org/> — Dr T.S. Kelso's service, the canonical free source of general
+perturbations data, derived from the US Space Force's public catalogue. Orbital elements
+produced by a US government body are not themselves copyrightable, but CelesTrak's
+*service* is a private one run at someone's expense, and its terms are enforced
+technically rather than legally:
 
-- GP data refreshes every **2 hours**. Do not request a dataset more than once per
-  cycle.
-- Abuse earns **HTTP 403**, then an **IP-level firewall block**. Retrying a 403 or a
-  404 does not help and makes a block more likely.
+- GP data refreshes every **2 hours**. Do not request a dataset more than once per cycle
+  — a repeat inside the cycle returns HTTP 403.
+- Abuse earns **HTTP 403**, then an **IP-level firewall block**. Retrying a 403 or a 404
+  does not help and makes a block more likely.
 - Further restrictions apply past **100 MB/day**.
 - Automated consumers should identify themselves in the `User-Agent` header.
 
 ### The arrangement this repo uses, and why a fork must keep it
 
-`scripts/fetch-tle.mjs` is the only thing in this project that talks to CelesTrak.
-It runs from `.github/workflows/update-tle.yml` every six hours and commits the
-result. **The browser never contacts CelesTrak** — it reads the static file that job
-produced.
+`scripts/fetch-catalog.mjs` is the only thing in this project that talks to CelesTrak. It
+runs inside `.github/workflows/deploy.yml` every six hours, refuses to request any dataset
+fetched under two hours ago, never retries, and keeps its cached copy whenever CelesTrak
+refuses. A full run is ~9 MB. **The browser never contacts CelesTrak** — it reads the
+packed files that job published.
 
-This is not merely polite. A public page fetching CelesTrak directly puts *every
-visitor's* request on this project's account, which is exactly the pattern their
-403s and IP blocks exist to stop; and CelesTrak sends no CORS headers, so it would
-not work from a browser anyway. Every six hours is far more often than the data
-needs — TLE accuracy degrades over days, not minutes.
+This is not merely polite. A public page fetching CelesTrak directly puts *every visitor's*
+request on this project's account, which is exactly the pattern their 403s and IP blocks
+exist to stop; and CelesTrak sends no CORS headers, so it would not work from a browser
+anyway. Every six hours is far more often than the data needs — element accuracy degrades
+over days, not minutes.
 
 If you fork this, keep the fetch-and-cache arrangement intact.
 
 ## Space-Track
 
-<https://www.space-track.org/> holds a fuller catalogue including debris, but
-requires authentication and restricts redistribution, which makes it unsuitable as
-the source for a public page. It is noted here only so the choice is on the record.
+<https://www.space-track.org/> holds the complete catalogue, debris included, but requires
+authentication and restricts redistribution — and a public page that ships element sets to
+every visitor's browser is redistribution. It is the only way to the missing ~14k objects,
+and is noted here so that choice is on the record.

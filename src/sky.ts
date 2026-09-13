@@ -12,7 +12,7 @@ import {
   type AU,
 } from 'satellite.js';
 
-import type { CatalogEntry } from './tle';
+import type { CatalogEntry } from './catalog';
 import { OBSERVER } from './config';
 
 /**
@@ -28,7 +28,10 @@ export interface SkyState {
   elevation: number;
   /** Kilometres from the observer. */
   range: number;
-  /** km/s. Negative = approaching (frequency shifted up). Drives Doppler. */
+  /**
+   * km/s. Negative = approaching (frequency shifted up). Drives Doppler.
+   * NaN below the horizon, where it is deliberately not computed - see `stateOf`.
+   */
   rangeRate: number;
   /** 0 = in full sunlight, 1 = in Earth's umbra. Below ~0.5 it is naked-eye visible. */
   shadow: number;
@@ -80,8 +83,14 @@ export function epochAt(date: Date): Epoch {
  * the frame's own angular velocity, so a naive dot product of that "ECF velocity"
  * against the line of sight is wrong by the observer's own motion - which is
  * hundreds of metres per second at this latitude, i.e. a large fraction of the
- * Doppler signal we care about. Differencing sidesteps the whole question and is
- * cheap enough at this scale.
+ * Doppler signal we care about. Differencing sidesteps the whole question.
+ *
+ * It is not free, though: it is a second propagation per object, which at
+ * catalogue scale is most of the tick. And nothing reads range rate below the
+ * horizon - the readout lists only what is up, and the sonification will only
+ * voice what is up. So it is computed for those alone. Measured on the 16,563-object
+ * `active` set: 54 ms per tick differencing everything, 24 ms differencing only the
+ * ~6% above the horizon. Step 2's worker and WASM propagator are the real fix.
  */
 export function stateOf(entry: CatalogEntry, index: number, epoch: Epoch): SkyState | null {
   const pv = propagate(entry.satrec, epoch.date);
@@ -89,8 +98,11 @@ export function stateOf(entry: CatalogEntry, index: number, epoch: Epoch): SkySt
 
   const look = ecfToLookAngles(OBSERVER_GEODETIC, eciToEcf(pv.position, epoch.gmst));
 
-  const later = rangeAt(entry.satrec, epoch.laterDate, epoch.laterGmst);
-  const rangeRate = later === null ? 0 : later - look.rangeSat;
+  let rangeRate = Number.NaN;
+  if (look.elevation > 0) {
+    const later = rangeAt(entry.satrec, epoch.laterDate, epoch.laterGmst);
+    rangeRate = later === null ? 0 : later - look.rangeSat;
+  }
 
   return {
     index,

@@ -9,7 +9,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "fetch:tle": "node scripts/fetch-tle.mjs",
+    "fetch:catalog": "node scripts/fetch-catalog.mjs && node scripts/pack-catalog.mjs",
+    "pack:catalog": "node scripts/pack-catalog.mjs",
+    "check:catalog": "node scripts/check-catalog.mjs",
+    "make:synthetic": "node scripts/make-synthetic.mjs",
     "validate": "node scripts/validate.mjs",
     "reference": "python3 scripts/reference.py > scripts/reference.json",
     "bench": "node scripts/bench.mjs"

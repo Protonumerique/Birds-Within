@@ -8,7 +8,7 @@
  *
  *   npm run bench
  *
- * The catalogue is faked by repeating the vendored snapshot up to 30k entries -
+ * The catalogue is faked by repeating the frozen validation fixture up to 30k entries -
  * SGP4 cost per object barely depends on which object it is, so the timing holds.
  */
 
@@ -40,7 +40,7 @@ const COUNT = Number(process.argv[2] ?? 30000);
 const OBSERVER = { latitude: degreesToRadians(52.52), longitude: degreesToRadians(13.405), height: 0.034 };
 const WHEN = new Date(Date.UTC(2026, 8, 12, 0, 0, 0));
 
-const lines = readFileSync(resolve(ROOT, 'public/data/stations.tle'), 'utf8')
+const lines = readFileSync(resolve(ROOT, 'scripts/fixtures/validation.tle'), 'utf8')
   .split('\n')
   .filter((l) => l.trim() && !l.startsWith('#'));
 

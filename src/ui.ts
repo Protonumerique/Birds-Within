@@ -1,6 +1,6 @@
-import { OBSERVER, CLOCK, HUD_ROWS } from './config';
+import { OBSERVER, CLOCK, HUD_ROWS, type Dataset } from './config';
 import type { Clock } from './clock';
-import type { CatalogEntry } from './tle';
+import type { CatalogEntry } from './catalog';
 import type { SkyState } from './sky';
 
 const deg = (rad: number) => (rad * 180) / Math.PI;
@@ -14,17 +14,26 @@ export interface Hud {
   selectedIndex(): number;
 }
 
-export function createHud(root: HTMLElement, clock: Clock, catalog: CatalogEntry[]): Hud {
+export interface HudSource {
+  dataset: Dataset;
+  /** When the element sets were fetched. */
+  generatedAt: Date;
+}
+
+export function createHud(root: HTMLElement, clock: Clock, catalog: CatalogEntry[], source: HudSource): Hud {
   // Start on whatever is highest in the sky; the user can click any row.
   let selected = -1;
 
   const lat = `${Math.abs(OBSERVER.latitudeDeg).toFixed(3)}° ${OBSERVER.latitudeDeg >= 0 ? 'N' : 'S'}`;
   const lon = `${Math.abs(OBSERVER.longitudeDeg).toFixed(3)}° ${OBSERVER.longitudeDeg >= 0 ? 'E' : 'W'}`;
+  const asOf = `${source.generatedAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
   root.innerHTML = `
     <div class="panel">
       <h1>Birds Within</h1>
-      <div class="sub">${OBSERVER.name} · ${lat} ${lon} · ${catalog.length} objects tracked</div>
+      <div class="sub">${OBSERVER.name} · ${lat} ${lon}</div>
+      <div class="sub">${catalog.length.toLocaleString('en')} objects · ${source.dataset} · elements as of ${asOf}</div>
+      ${source.dataset === 'synthetic' ? '<div class="warn">synthetic · invented orbits, not real objects</div>' : ''}
       <div class="clock" id="t">--:--:--<small id="tl">&nbsp;</small></div>
       <div class="controls">
         <button id="pause">PAUSE</button>

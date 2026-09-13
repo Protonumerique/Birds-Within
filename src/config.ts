@@ -8,18 +8,35 @@ export const OBSERVER = {
 };
 
 /**
- * The vendored catalogue snapshot.
+ * Which packed catalogue to load - all src/catalog-format.ts binaries in public/data/.
  *
- * `synthetic-leo.tle` is ~1450 GENERATED orbits across plausible LEO shells - not
- * real objects - so the dome shows something like the density the piece is about
- * before the real catalogue arrives in step 2. Roughly 6% of it is above the
- * horizon at any moment, which matches the real catalogue's behaviour.
+ * - `active`    every payload CelesTrak lists as active. 16,563 on 2026-09-13.
+ * - `full`      the union of every CelesTrak GP dataset. 20,933 on 2026-09-13 - all
+ *               the sky CelesTrak publishes: every payload, but only ~3k of the ~15k
+ *               debris on orbit. See scripts/catalog-sources.mjs.
+ * - `synthetic` ~1450 INVENTED orbits, committed so development works offline. Not
+ *               real objects, and the HUD says so whenever it is showing.
  *
- * `stations.tle` is five station-like objects with approximate real elements.
+ * `active` and `full` are built by `npm run fetch:catalog` locally and by deploy.yml
+ * in CI. They are not in git.
  *
- * Both are placeholders. `npm run fetch:tle` replaces them with live CelesTrak data.
+ * Which of the two real images the piece wants is an aesthetic question, so it is
+ * answerable by looking rather than by rebuilding: `?catalog=full` overrides this.
  */
-export const TLE_URL = `${import.meta.env.BASE_URL}data/synthetic-leo.tle`;
+export type Dataset = 'active' | 'full' | 'synthetic';
+
+const DEFAULT_DATASET: Dataset = 'active';
+
+function datasetFromUrl(): Dataset {
+  const requested = new URLSearchParams(location.search).get('catalog');
+  return requested === 'active' || requested === 'full' || requested === 'synthetic'
+    ? requested
+    : DEFAULT_DATASET;
+}
+
+export const DATASET: Dataset = datasetFromUrl();
+
+export const catalogUrl = (dataset: Dataset) => `${import.meta.env.BASE_URL}data/${dataset}.bin`;
 
 /** How many objects the readout lists, highest first. */
 export const HUD_ROWS = 14;
@@ -31,8 +48,7 @@ export const SKY = {
    * How far below the horizon to keep drawing, in degrees.
    *
    * -90 draws the whole sphere, so objects on the far side of the Earth stay
-   * present but heavily dimmed. With only a handful of objects in the spike this
-   * is also what stops the sky being empty between passes.
+   * present but heavily dimmed.
    */
   showBelowHorizonDeg: -90,
 };
