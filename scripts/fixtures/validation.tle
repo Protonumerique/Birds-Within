@@ -1,0 +1,36 @@
+# FROZEN VALIDATION FIXTURE - do not regenerate, do not refresh, do not replace
+# with live data.
+#
+# scripts/reference.py and scripts/validate.mjs both read THIS file, never
+# public/data/. That separation is the whole point: public/data/stations.tle is
+# rewritten by .github/workflows/update-tle.yml every six hours, and when it was,
+# scripts/reference.json silently began comparing the same objects propagated from
+# DIFFERENT element sets - ~11,000 km of "deviation" that was not a bug in
+# anything. A validation fixture that a cron job can edit is not a fixture.
+#
+# These are the approximate placeholder elements from the initial commit, at a
+# fixed epoch of 2026-09-12T00:00:00Z. They do NOT describe where these objects
+# really are, and that does not matter here: the check is whether satellite.js and
+# sgp4+skyfield agree on the coordinate and time chain given identical input. SGP4
+# does not care whether its elements are real.
+#
+# If you ever do change this file, scripts/reference.json must be regenerated in
+# the same commit:
+#     pip install sgp4 skyfield
+#     python3 scripts/reference.py > scripts/reference.json
+#     npm run validate
+ISS (ZARYA)
+1 25544U 98067A   26255.00000000  .00016717  00000-0  16538-3 0  9998
+2 25544  51.6400 247.4600 0006703 130.5360 325.0288 15.50377579563534
+CSS (TIANHE)
+1 48274U 21035A   26255.00000000  .00021584  00000-0  24076-3 0  9998
+2 48274  41.4700 108.3320 0004521 275.8400  84.2100 15.61870000256105
+PROGRESS-MS 30
+1 62841U 25009A   26255.00000000  .00023918  00000-0  41864-3 0  9996
+2 62841  51.6390 247.3010 0005890 128.9100 231.2400 15.50410000120457
+SOYUZ-MS 28
+1 63102U 25041A   26255.00000000  .00018204  00000-0  32700-3 0  9994
+2 63102  51.6410 247.5220 0007120 112.4400 247.7800 15.50390000 48121
+TIANZHOU-9
+1 61455U 25018A   26255.00000000  .00019772  00000-0  22015-3 0  9996
+2 61455  41.4680 108.2010 0003990 301.7700  58.2900 15.61910000 73206

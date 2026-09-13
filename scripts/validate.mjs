@@ -41,7 +41,10 @@ const TOL = {
 
 const ref = JSON.parse(readFileSync(new URL('./reference.json', import.meta.url), 'utf8'));
 
-const tleText = readFileSync(new URL('../public/data/stations.tle', import.meta.url), 'utf8');
+// scripts/fixtures/validation.tle, never public/data/: that snapshot is rewritten
+// by the TLE Action every six hours, and reference.json would then be describing
+// a different set of elements than the ones loaded here.
+const tleText = readFileSync(new URL('./fixtures/validation.tle', import.meta.url), 'utf8');
 const tleLines = tleText.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
 const satrecs = new Map();
 for (let i = 0; i < tleLines.length; i += 3) {

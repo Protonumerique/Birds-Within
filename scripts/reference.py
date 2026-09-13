@@ -16,7 +16,9 @@ import sys
 from sgp4.api import Satrec, jday
 from skyfield.api import EarthSatellite, load, wgs84
 
-TLE_PATH = "public/data/stations.tle"
+# The frozen fixture, NOT public/data/: that snapshot is refreshed by CI every six
+# hours, which would silently invalidate every case in reference.json.
+TLE_PATH = "scripts/fixtures/validation.tle"
 
 # Berlin. Must match OBSERVER in src/config.ts.
 OBS_LAT_DEG = 52.5200

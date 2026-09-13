@@ -13,10 +13,21 @@ data before drawing any conclusion about where anything actually is:
     npm run fetch:tle
 
     python3 scripts/make_placeholder_tle.py
+
+CAUTION: public/data/stations.tle now holds REAL CelesTrak data, refreshed by
+.github/workflows/update-tle.yml. Regenerating it here would replace genuine
+elements with invented ones, in a file whose name gives no hint of that. So
+write_stations() refuses unless you pass --stations, and synthetic-leo.tle is
+the only thing a bare run touches.
+
+The frozen elements the propagation check needs are NOT produced here either -
+they live in scripts/fixtures/validation.tle and must stay byte-stable, because
+scripts/reference.json was computed from them.
 """
 
 import math
 import random
+import sys
 
 MU = 398600.4418  # km^3/s^2
 R_EARTH = 6378.137  # km
@@ -84,6 +95,11 @@ STATIONS = [
 
 
 def write_stations():
+    # Opt-in only: see the CAUTION in the module docstring.
+    if "--stations" not in sys.argv:
+        print("stations.tle:      SKIPPED - holds live CelesTrak data.")
+        print("                   Pass --stations to overwrite it with placeholders.")
+        return
     out = [
         "# PLACEHOLDER - approximate elements, fixed epoch 2026-09-12T00:00:00Z.",
         "# NOT REAL POSITIONS. Replace with:  npm run fetch:tle",

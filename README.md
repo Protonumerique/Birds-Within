@@ -18,11 +18,11 @@ npm run fetch:tle   # optional but recommended — see below
 npm run dev
 ```
 
-The repo ships with **placeholder** element sets so it runs offline out of the box:
-`synthetic-leo.tle` (~1450 generated orbits across plausible LEO shells, loaded by
-default so the dome has realistic density) and `stations.tle` (five station-like objects
-with approximate real elements). Neither is real — `npm run fetch:tle` replaces them
-with live CelesTrak data.
+The dome loads `synthetic-leo.tle` by default — ~1450 **generated** orbits across
+plausible LEO shells, so it runs offline out of the box with something like the density
+the piece is about. Nothing in it is a real object. `stations.tle` alongside it *is* real
+CelesTrak data, refreshed by the scheduled Action. `npm run fetch:tle` pulls live data
+yourself; see `public/data/SOURCES.md` for where it all comes from.
 
 Drag to look around, scroll to zoom, click a row to draw that object's track.
 
@@ -40,12 +40,20 @@ The coordinate and time handling is validated against an independent implementat
 Brandon Rhodes' `sgp4` (Vallado's C++ reference) plus Skyfield:
 
 ```bash
-pip install sgp4 skyfield
-python3 scripts/reference.py > scripts/reference.json
-npm run validate
+npm run validate                                        # compare — Node only
 ```
 
 ECI positions agree to about 10 cm; alt/az to a few thousandths of a degree.
+
+Both sides propagate `scripts/fixtures/validation.tle`, which is frozen on purpose and
+must never be refreshed: the checked-in `scripts/reference.json` was computed from those
+exact elements, so replacing them turns the check into a comparison of two different
+things. Regenerating the reference is the only step that needs Python:
+
+```bash
+pip install sgp4 skyfield
+python3 scripts/reference.py > scripts/reference.json
+```
 
 ## Scale
 
@@ -69,10 +77,12 @@ src/
   ui.ts        overlay
   main.ts      wiring and the frame loop
 scripts/
-  fetch-tle.mjs   CelesTrak client
+  fetch-tle.mjs   CelesTrak client — the only thing that talks to them
   reference.py    independent reference (Python)
   validate.mjs    cross-implementation check
   bench.mjs       JS vs WASM at catalogue scale
+  fixtures/       frozen elements for the check — not live data, never refreshed
+public/data/      the shipped snapshot; see SOURCES.md
 ```
 
 See `CLAUDE.md` for the architecture decisions and the roadmap.
