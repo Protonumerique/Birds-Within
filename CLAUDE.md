@@ -128,8 +128,9 @@ falls straight out of the geometry.
   is a few degrees of wobble around a fixed point, a smudge where the object already is.
   They are **never the track's fallback** either, so keeping one does not take the
   ambient track away from the sky.
-- They can still be hovered and kept. Their ring is **smaller and blue** (`CHOIR`), at a
-  steady brightness rather than dimmed by elevation — they do not climb or descend, so
+- **They are blue from the start**, points and rings alike — not only when touched. See
+  *Colour and visual conventions*. Their ring is also **smaller** (`CHOIR`) and at a
+  steady brightness rather than dimmed by elevation: they do not climb or descend, so
   dimming them by it would say something untrue.
 - **Exempt from `releaseBelowDeg`.** A good many sit under two degrees and stay there
   forever; releasing them on that rule would make the low half of the belt impossible to
@@ -194,6 +195,48 @@ second late — and cost a second propagation per object; Doppler costs 0.9 ms p
 the propagator and runtime before re-initialising; otherwise they live as long as the page.
 Init — decode, 21k `json2satrec`, and a ~600 ms `setSatRecs` — takes 0.6–0.8 s in the worker,
 behind a "building N orbits…" status, with the page responsive throughout.
+
+### Colour and visual conventions
+
+Decided 2026-09-14, in `PALETTE` and `KIND_LOOK`. Two axes, kept strictly apart:
+
+- **Hue says what a thing *is*.** Warm white `#fff2d6` is a passing satellite; blue
+  `#8ad4ff` is geostationary. A geostationary object is blue whether it is sunlit,
+  eclipsed or below the horizon, because belonging to the belt is a permanent fact
+  about it and not a condition it is passing through.
+- **Value says what state it is *in*.** Full brightness is sunlit — what the eye could
+  actually see. Half is eclipsed. Dim is below the horizon.
+
+**Eclipsed used to be blue and is now a neutral grey `#808080`.** That is the point of
+the change: blue had to be freed to mean exactly one thing. Below-horizon is likewise
+a neutral `#4a4f54`, never blue, for the same reason.
+
+**Amber `#ffb454` is the third hue and it is the pointer's alone.** Nothing in the sky
+is amber until a person touches it, which is what makes a ring read as attention
+rather than as a property of the object.
+
+**Wreckage differs in texture, not hue.** `KIND_LOOK` gives rocket bodies and debris a
+smaller point and a weaker glow — they carry the same state colours as everything
+else. A payload flares; wreckage stays a flat speck. Adding a fourth and fifth hue
+would have broken the two-axis rule for a distinction that is already legible as
+brightness.
+
+The `kind` byte this reads has been in the catalogue since Step 1 and went unused
+until now. It is a **heuristic on the name** (`kindFromName`): GP data carries no
+object type at all, SATCAT does but joining it is a second dataset for one byte, and
+an unnamed fragment therefore reads as a payload. Good enough to read density
+composition, which is what the image needs; not a classification. Note that `active`
+is payloads only, so wreckage is visible almost entirely under `?catalog=full`.
+
+**Vocabulary:** *choir* is the internal name — code, config, this file — and is meant
+to carry through to Step 4, where the belt is a drone under the passes. On screen the
+word is **geostationary**, which is what a reader knows. (Strictly the membership test
+is geo*synchronous* and takes in inclined and drifting belt objects too; the screen
+uses the common word on purpose.)
+
+**The legend names only what the eye has to tell apart:** sunlit, eclipsed,
+geostationary, debris. *Below horizon* was dropped — those objects are barely present
+in the image, and naming a thing you cannot really see costs more than it explains.
 
 ### Rendering: two ticks per object, blended on the GPU
 

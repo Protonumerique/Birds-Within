@@ -99,8 +99,8 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
       <div class="legend">
         <i style="color:var(--lit)">●</i> sunlit &nbsp;
         <i style="color:var(--eclipsed)">●</i> eclipsed &nbsp;
-        <i style="color:var(--ink-faint)">●</i> below horizon &nbsp;
-        <i style="color:var(--choir)">○</i> choir &nbsp;·&nbsp; drag to look, scroll to zoom,
+        <i style="color:var(--geo)">●</i> geostationary &nbsp;
+        <i style="color:var(--ink-dim)">·</i> debris &nbsp;·&nbsp; drag to look, scroll to zoom,
         click to keep
       </div>
     </div>
@@ -286,7 +286,7 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
         if (isChoir(i) && (selection.isMarked(i) || i === selection.hovered)) keptChoir.push(i);
       }
       const choirUp = above.length - passing.length;
-      choirCountEl.textContent = `${choirUp} in the choir · never rise, never set`;
+      choirCountEl.textContent = `${choirUp} geostationary · never rise, never set`;
 
       for (let r = 0; r < choirPool.length; r++) {
         const row = choirPool[r]!;

@@ -2,13 +2,13 @@ import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { CHOIR, HIGHLIGHT, SKY, TRAIL } from './config';
+import { CHOIR, HIGHLIGHT, KIND_LOOK, PALETTE, SKY, TRAIL } from './config';
 import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
 import type { FramePair } from './sky-stream';
 import { pickNearest } from './picking';
 
 /** The sky's own colour: the clear colour, and what the haze fades objects into. */
-const SKY_COLOR = 0x05070a;
+const SKY_COLOR = PALETTE.sky;
 
 /**
  * Draw order of the transparent layers, back to front. Objects, their rings and the
@@ -72,21 +72,33 @@ function fade(y: number, top: number): number {
 const HIDE_GLSL = /* glsl */ `gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0;`;
 
 /**
- * Appearance - above or below the horizon, lit or eclipsed, size by range - is
- * decided from the blended values, so an object changes colour exactly where it
- * crosses the horizon on screen, not at the next tick.
+ * Appearance - what a thing is, what state it is in, size by range - is decided from
+ * the blended values, so an object changes colour exactly where it crosses the
+ * horizon on screen, not at the next tick.
+ *
+ * Hue is category and value is state; see PALETTE. A geostationary object is blue
+ * whether it is lit, eclipsed or below the horizon, because belonging to the belt is
+ * a permanent fact about it. Wreckage differs in texture rather than hue: smaller,
+ * and without the glow that makes a payload read as something lit.
  */
 const POINT_VERT = /* glsl */ `
   ${BLEND_GLSL}
+
+  attribute float aChoir;
+  attribute float aKind;
 
   uniform float uRadius;
   uniform float uPixelRatio;
   uniform vec3 uColorLit;
   uniform vec3 uColorEclipsed;
   uniform vec3 uColorBelow;
+  uniform vec3 uColorChoir;
+  uniform vec2 uRocketLook;
+  uniform vec2 uDebrisLook;
 
   varying float vAlpha;
   varying vec3 vColor;
+  varying float vGlow;
 
   void main() {
     vec3 dir;
@@ -96,18 +108,24 @@ const POINT_VERT = /* glsl */ `
       ${HIDE_GLSL}
       vAlpha = 0.0;
       vColor = vec3(0.0);
+      vGlow = 0.0;
       return;
     }
 
     bool above = dir.y >= 0.0;
     bool lit = shadow < 0.5;
+    bool choir = aChoir > 0.5;
 
-    vColor = above ? (lit ? uColorLit : uColorEclipsed) : uColorBelow;
-    vAlpha = above ? (lit ? 1.0 : 0.6) : 0.3;
+    vColor = choir ? uColorChoir : (above ? (lit ? uColorLit : uColorEclipsed) : uColorBelow);
+    vAlpha = above ? (choir ? 1.0 : (lit ? 1.0 : 0.6)) : 0.3;
+
+    // KIND: 0 payload, 1 rocket body, 2 debris.
+    vec2 look = aKind > 1.5 ? uDebrisLook : (aKind > 0.5 ? uRocketLook : vec2(1.0));
+    vGlow = look.y;
 
     // Nearer objects read as larger. Purely a depth cue - the dome has no scale.
     float nearness = clamp(1.0 - (range - 400.0) / 4000.0, 0.25, 1.0);
-    gl_PointSize = (above ? 16.0 : 8.0) * nearness * uPixelRatio;
+    gl_PointSize = (above ? 16.0 : 8.0) * nearness * look.x * uPixelRatio;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
   }
 `;
@@ -115,16 +133,19 @@ const POINT_VERT = /* glsl */ `
 const POINT_FRAG = /* glsl */ `
   varying float vAlpha;
   varying vec3 vColor;
+  varying float vGlow;
   void main() {
     // Soft round sprite with a hot core, so dense clusters still read as many.
     // Blending is additive, which multiplies rgb by alpha and adds: intensity
     // therefore belongs in rgb, and the alpha channel stays at 1.
+    //
+    // vGlow scales only the core: a payload flares, wreckage stays a flat speck.
     vec2 d = gl_PointCoord - vec2(0.5);
     float r = length(d) * 2.0;
     if (r > 1.0) discard;
     float core = smoothstep(1.0, 0.0, r);
     float glow = pow(core, 2.5);
-    gl_FragColor = vec4(vColor * (0.22 * core + 1.9 * glow) * vAlpha, 1.0);
+    gl_FragColor = vec4(vColor * (0.22 * core + 1.9 * glow * vGlow) * vAlpha, 1.0);
   }
 `;
 
@@ -253,11 +274,13 @@ const HAZE_FRAG = /* glsl */ `
 `;
 
 /** Sunlit, above horizon: what you could actually see with the naked eye. */
-const COLOR_LIT = new THREE.Color('#fff2d6');
+const COLOR_LIT = new THREE.Color(PALETTE.lit);
 /** In Earth's shadow: present, tracked, invisible to the eye. */
-const COLOR_ECLIPSED = new THREE.Color('#86b4d2');
+const COLOR_ECLIPSED = new THREE.Color(PALETTE.eclipsed);
 /** Below the horizon: on the other side of the world. */
-const COLOR_BELOW = new THREE.Color('#3f5b6e');
+const COLOR_BELOW = new THREE.Color(PALETTE.below);
+/** The geosynchronous belt, in every state. */
+const COLOR_CHOIR = new THREE.Color(PALETTE.geostationary);
 
 /** How far a press may travel, in CSS pixels, and still count as a click. */
 const DRAG_SLOP = 6;
@@ -291,6 +314,9 @@ export class SkyScene {
     uColorLit: { value: COLOR_LIT },
     uColorEclipsed: { value: COLOR_ECLIPSED },
     uColorBelow: { value: COLOR_BELOW },
+    uColorChoir: { value: COLOR_CHOIR },
+    uRocketLook: { value: new THREE.Vector2(KIND_LOOK.rocketBody.size, KIND_LOOK.rocketBody.glow) },
+    uDebrisLook: { value: new THREE.Vector2(KIND_LOOK.debris.size, KIND_LOOK.debris.glow) },
   };
 
   private highlightIndex: THREE.BufferAttribute;
@@ -299,6 +325,8 @@ export class SkyScene {
   private markAttribute: THREE.BufferAttribute;
   /** Per-object 0/1: is this one in the geosynchronous belt. Set once. */
   private choirAttribute: THREE.BufferAttribute;
+  /** Per-object KIND: 0 payload, 1 rocket body, 2 debris. Set once. */
+  private kindAttribute: THREE.BufferAttribute;
   private marked: number[] = [];
   private readonly ringUniforms;
 
@@ -351,6 +379,12 @@ export class SkyScene {
     };
     this.slots = [makeSlot(), makeSlot()];
 
+    // What each object *is*, as opposed to where it is. Both fixed by the catalogue,
+    // so they are uploaded once and never touched again - and shared by the points
+    // and the rings, which must agree about which objects are the belt.
+    this.choirAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
+    this.kindAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
+
     // Both geometries hold the SAME attribute objects, so three.js uploads each tick
     // once and the rings read exactly the buffers the points do.
     const withTicks = (geom: THREE.BufferGeometry) => {
@@ -359,6 +393,8 @@ export class SkyScene {
       geom.setAttribute('aDir1', this.slots[1].direction);
       geom.setAttribute('aState0', this.slots[0].state);
       geom.setAttribute('aState1', this.slots[1].state);
+      geom.setAttribute('aChoir', this.choirAttribute);
+      geom.setAttribute('aKind', this.kindAttribute);
       return geom;
     };
 
@@ -387,10 +423,6 @@ export class SkyScene {
     ringsGeom.setAttribute('aIndex', new THREE.BufferAttribute(ids, 1));
     this.markAttribute = new THREE.BufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setAttribute('aMark', this.markAttribute);
-    // Which objects are the choir. Fixed for the life of the catalogue, so it is
-    // uploaded once by setChoir and never touched again.
-    this.choirAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
-    ringsGeom.setAttribute('aChoir', this.choirAttribute);
     // A ring per object is the ceiling: the readout's rows, every mark, and the hover.
     this.highlightIndex = new THREE.BufferAttribute(new Uint32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setIndex(this.highlightIndex);
@@ -520,14 +552,20 @@ export class SkyScene {
   }
 
   /**
-   * Which objects belong to the choir. Fixed by the catalogue, so this is called
-   * once: a choir ring is blue and smaller, and says so without the CPU's help.
+   * What the objects are: which belong to the belt, and which are wreckage. Both are
+   * fixed by the catalogue, so this is called once and the shader does the rest -
+   * the CPU never touches appearance again.
    */
-  setChoir(choir: Uint8Array): void {
-    const flags = this.choirAttribute.array as Float32Array;
-    const n = Math.min(choir.length, flags.length);
-    for (let i = 0; i < n; i++) flags[i] = choir[i]!;
+  setClasses(choir: Uint8Array, kind: Uint8Array): void {
+    const choirFlags = this.choirAttribute.array as Float32Array;
+    const kinds = this.kindAttribute.array as Float32Array;
+    const n = Math.min(choir.length, choirFlags.length);
+    for (let i = 0; i < n; i++) {
+      choirFlags[i] = choir[i]!;
+      kinds[i] = kind[i] ?? 0;
+    }
     this.choirAttribute.needsUpdate = true;
+    this.kindAttribute.needsUpdate = true;
   }
 
   /** The object under the pointer, or -1. One uniform: a sweep uploads nothing. */

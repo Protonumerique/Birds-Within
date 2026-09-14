@@ -55,7 +55,7 @@ async function main() {
   const clock = new Clock();
   const scene = new SkyScene(canvas, stream.count);
   const selection = new Selection();
-  scene.setChoir(stream.choir);
+  scene.setClasses(stream.choir, stream.kind);
   const hud = createHud(hudRoot, clock, {
     names: stream.names,
     dataset,

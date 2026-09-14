@@ -58,6 +58,48 @@ export const HUD_ROWS = 14;
  */
 export const HOVER_KEEPS_ROW = true;
 
+/**
+ * The visual grammar, decided 2026-09-14. Two axes, kept strictly apart:
+ *
+ * - **Hue says what a thing is.** Warm white is a passing satellite; blue is
+ *   geostationary. A geostationary object is blue in every state, because belonging
+ *   to the belt is a permanent fact about it, not a condition it is passing through.
+ * - **Value says what state it is in.** Full brightness is sunlit - what you could
+ *   actually see with the naked eye. Half is eclipsed. Dim is below the horizon.
+ *
+ * This is why eclipsed is now a neutral grey rather than the blue it used to be:
+ * blue had to be freed to mean one thing. Amber is the third hue and it is the
+ * pointer's alone - nothing in the sky is amber until a person touches it.
+ */
+export const PALETTE = {
+  /** The sky's own colour: the clear colour, and what the haze fades objects into. */
+  sky: '#05070a',
+  /** A passing satellite in sunlight. */
+  lit: '#fff2d6',
+  /** A passing satellite inside Earth's shadow: tracked, and invisible to the eye. */
+  eclipsed: '#808080',
+  /** Anything below the horizon, on the far side of the world. Neutral, never blue. */
+  below: '#4a4f54',
+  /** Geostationary, in every state. See CHOIR and *The choir* in CLAUDE.md. */
+  geostationary: '#8ad4ff',
+};
+
+/**
+ * How the `kind` byte reads on screen - the heuristic in catalog-format.ts, which
+ * knows debris and rocket bodies from CelesTrak's naming and nothing more.
+ *
+ * Not a fourth and fifth hue. Wreckage carries the same state colours as everything
+ * else and differs in *texture*: smaller, and without the glow that makes a payload
+ * read as something lit. Hue stays reserved for category.
+ *
+ * `active` is payloads only, so this is visible almost entirely on `?catalog=full`.
+ */
+export const KIND_LOOK = {
+  /** size multiplier, glow multiplier. 1 / 1 is a payload. */
+  rocketBody: { size: 0.85, glow: 0.55 },
+  debris: { size: 0.65, glow: 0.4 },
+};
+
 export const SKY = {
   /** Radius of the dome in scene units. Arbitrary - the sky has no scale. */
   radius: 100,
@@ -146,8 +188,8 @@ export const CHOIR = {
   /** Ring diameter, CSS pixels. Smaller than HIGHLIGHT.diameterPx on purpose. */
   diameterPx: 17,
   strokePx: 1.2,
-  /** Cool against the passing objects' amber, and cooler than the eclipsed blue. */
-  color: '#8ad4ff',
+  /** The ring matches the point: one blue means one thing. */
+  color: PALETTE.geostationary,
   /**
    * How many kept choir objects the panel names. A placeholder: where the choir's
    * data belongs is a dashboard question, not yet answered.

@@ -3,9 +3,10 @@
   --ink: #cfe0ec;
   --ink-dim: #6d8698;
   --ink-faint: #3d5566;
+  /* Mirrors PALETTE in config.ts - hue is category, value is state. */
   --lit: #fff2d6;
-  --eclipsed: #7fa6bf;
-  --choir: #8ad4ff;
+  --eclipsed: #808080;
+  --geo: #8ad4ff;
   --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, monospace;
 }
 
@@ -158,7 +159,7 @@ tr.up td.name {
 
 tr.selected td.name::before {
   content: "▸ ";
-  color: var(--eclipsed);
+  color: var(--ink);
 }
 
 tr {
@@ -216,7 +217,7 @@ td.name {
   justify-content: space-between;
   gap: 10px;
   font-size: 10px;
-  color: var(--choir);
+  color: var(--geo);
   cursor: pointer;
   padding: 1px 0;
   font-variant-numeric: tabular-nums;
