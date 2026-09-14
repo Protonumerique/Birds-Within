@@ -123,7 +123,7 @@ export const HIGHLIGHT = {
    * case: a satellite parked at +0.4° in the south never sets at all, and would
    * otherwise hold its row for the life of the page.
    */
-  releaseBelowDeg: 2,
+  releaseBelowDeg: 5,
 };
 
 /**
@@ -140,7 +140,7 @@ export const TRAIL = {
   /** Seconds between sampled points along a trail. */
   stepSeconds: 20,
   /** Line width in CSS pixels. */
-  widthPx: 1.4,
+  widthPx: 2,
   /** Opacity of a track at full brightness. */
   opacity: 0.5,
   /**
