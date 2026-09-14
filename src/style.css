@@ -37,6 +37,12 @@ body {
   cursor: grabbing;
 }
 
+/* Something takeable is under the pointer. */
+#sky.over,
+#sky.over:active {
+  cursor: pointer;
+}
+
 #hud {
   position: fixed;
   inset: 0;
@@ -129,12 +135,13 @@ th {
   color: var(--ink-faint);
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  padding: 0 10px 5px 0;
+  padding: 0 10px 5px 5px;
   border-bottom: 1px solid rgba(120, 160, 190, 0.14);
 }
 
 td {
-  padding: 3px 10px 3px 0;
+  /* The left padding is the breathing room inside a tagged row's box. */
+  padding: 3px 10px 3px 5px;
   color: var(--ink-dim);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -155,6 +162,38 @@ tr.selected td.name::before {
 
 tr {
   cursor: pointer;
+  transition: transform 140ms ease;
+}
+
+/*
+ * A row whose object the pointer is on, or has stuck to: boxed in the ring's own
+ * colour and stepped out of the column, so the sky and the list can be read as one
+ * thing without a single word being printed on the sky.
+ *
+ * The box is inset shadows on the cells, not borders: a border would add its width
+ * to the row's height, and a row that grows under the pointer can push itself out
+ * from under it. Shadows cost no layout at all.
+ */
+tr.tagged {
+  transform: translateX(20px);
+}
+
+tr.tagged td {
+  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row);
+}
+
+tr.tagged td:first-child {
+  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row),
+    inset 1px 0 0 var(--mark-row);
+}
+
+tr.tagged td:last-child {
+  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row),
+    inset -1px 0 0 var(--mark-row);
+}
+
+tr.tagged.up td.name {
+  color: var(--mark-row);
 }
 
 td.name {

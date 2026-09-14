@@ -1,0 +1,60 @@
+/**
+ * What the pointer is touching, and what it has stuck to.
+ *
+ * Shared by the scene (which draws the rings) and the readout (which pins the rows),
+ * so the two can never disagree about which objects are marked. Indices are frame
+ * columns, like every other index in the app.
+ *
+ * Nothing textual belongs on the sky, so the whole response to the pointer is a ring
+ * on the object and a box on its row in the lower panel - see CLAUDE.md.
+ */
+export class Selection {
+  /** Objects the user clicked. They stay ringed, and hold a row, until they set. */
+  readonly marked = new Set<number>();
+
+  /** Bumped whenever anything here changes, so readers can upload only on a change. */
+  version = 0;
+
+  private hoveredIndex = -1;
+  /** Marking order, most recent last: the newest mark is the one wearing the trail. */
+  private order: number[] = [];
+
+  /** The object under the pointer, or -1. */
+  get hovered(): number {
+    return this.hoveredIndex;
+  }
+
+  setHovered(index: number): void {
+    if (index === this.hoveredIndex) return;
+    this.hoveredIndex = index;
+    this.version++;
+  }
+
+  isMarked(index: number): boolean {
+    return this.marked.has(index);
+  }
+
+  /** Click: stick to an unmarked object, let go of a marked one. */
+  toggle(index: number): void {
+    if (index < 0) return;
+    if (this.marked.delete(index)) {
+      this.order = this.order.filter((i) => i !== index);
+    } else {
+      this.marked.add(index);
+      this.order.push(index);
+    }
+    this.version++;
+  }
+
+  /** Drop a mark the user did not drop - an object that has set below the horizon. */
+  release(index: number): void {
+    if (!this.marked.delete(index)) return;
+    this.order = this.order.filter((i) => i !== index);
+    this.version++;
+  }
+
+  /** The most recently marked object, or -1. Gets the trail. */
+  get newest(): number {
+    return this.order.length ? this.order[this.order.length - 1]! : -1;
+  }
+}

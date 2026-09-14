@@ -41,6 +41,23 @@ export const catalogUrl = (dataset: Dataset) => `${import.meta.env.BASE_URL}data
 /** How many objects the readout lists, highest first. */
 export const HUD_ROWS = 14;
 
+/**
+ * Whether pointing at an object the readout is NOT listing gives it a row for as
+ * long as the pointer stays on it.
+ *
+ * On, the panel answers "what is that one?" while you sweep the sky, which is the
+ * only way a name can ever be attached to a mark - nothing textual is drawn up there.
+ * The cost is churn: the row is inserted in elevation order, so the rows under it
+ * shift by one every time the pointer crosses something new.
+ *
+ * Off, hovering only ever recolours a row that is already listed, and an unlisted
+ * object has to be clicked before it is named.
+ *
+ * Which of the two the piece wants is an aesthetic question, so it is answerable by
+ * looking rather than by reasoning. Marked objects keep their rows either way.
+ */
+export const HOVER_KEEPS_ROW = true;
+
 export const SKY = {
   /** Radius of the dome in scene units. Arbitrary - the sky has no scale. */
   radius: 100,
@@ -67,12 +84,35 @@ export const SKY = {
 /**
  * Rings around the objects the readout lists. For now these are also the default
  * voices of the sonification to come.
+ *
+ * The ring is also the whole of the pointer's response. Hovering an object rings it
+ * in `markColor`; clicking makes that ring stick, and a stuck object holds its row in
+ * the readout until it sets. Nothing textual is ever drawn on the sky - see CLAUDE.md.
  */
 export const HIGHLIGHT = {
   /** Outer diameter, CSS pixels. Fixed on screen, whatever the object's range. */
   diameterPx: 30,
   strokePx: 1.5,
+  /** The plain ring worn by whatever the readout happens to be listing. */
   color: '#ffffff',
+  /**
+   * Hovered and marked objects, in the sky and in the readout alike - one colour is
+   * what ties a ring to its row. Amber reads as put there by a person: the sky's own
+   * marks are warm white (sunlit) and steel blue (eclipsed), and nothing in it is
+   * this saturated.
+   */
+  markColor: '#ffb454',
+  /** The hovered ring grows slightly, so the pointer's reach is legible. */
+  hoverScale: 1.2,
+  /**
+   * A marked object's ring and its row dim together as it descends, so a glance at
+   * the sky reads the same ordering the readout is sorted by. This is the brightness
+   * at the horizon; it reaches full by `fullBrightDeg`.
+   */
+  dimAtHorizon: 0.3,
+  fullBrightDeg: 55,
+  /** How near the pointer has to be, in CSS pixels, to take an object. */
+  pickRadiusPx: 18,
 };
 
 export const TRAIL = {

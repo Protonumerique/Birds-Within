@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { HIGHLIGHT, HUD_ROWS, SKY } from './config';
+import { HIGHLIGHT, SKY } from './config';
 import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
 import type { FramePair } from './sky-stream';
+import { pickNearest } from './picking';
 
 /** The sky's own colour: the clear colour, and what the haze fades objects into. */
 const SKY_COLOR = 0x05070a;
@@ -118,14 +119,38 @@ const POINT_FRAG = /* glsl */ `
   }
 `;
 
+/**
+ * Three kinds of ring share one draw, because they are all the same ring: the plain
+ * white one the readout puts on whatever is highest, the amber one the pointer puts
+ * on what it is touching, and the amber one a click leaves behind.
+ *
+ * Hover is a uniform compared against a static per-object index, so sweeping the
+ * pointer across the sky uploads nothing at all. Marks are a per-object attribute,
+ * re-uploaded on a click - rare enough that the whole column can go at once.
+ *
+ * A marked ring's brightness comes from the blended elevation, in the shader, so it
+ * fades as the object descends in exact step with what is drawn, and in step with the
+ * readout's ordering. Its row in the panel dims by the same curve.
+ */
 const RING_VERT = /* glsl */ `
   ${BLEND_GLSL}
+
+  attribute float aIndex;
+  attribute float aMark;
 
   uniform float uRadius;
   uniform float uPixelRatio;
   uniform float uRingPx;
+  uniform float uHovered;
+  uniform float uHoverScale;
+  uniform vec3 uRingColor;
+  uniform vec3 uMarkColor;
+  uniform float uDimAtHorizon;
+  uniform float uFullBright;
 
   varying float vSizePx;
+  varying vec3 vColor;
+  varying float vAlpha;
 
   void main() {
     vec3 dir;
@@ -134,20 +159,33 @@ const RING_VERT = /* glsl */ `
     if (!blendTicks(dir, shadow, range)) {
       ${HIDE_GLSL}
       vSizePx = 0.0;
+      vColor = vec3(0.0);
+      vAlpha = 0.0;
       return;
     }
-    vSizePx = uRingPx * uPixelRatio;
+
+    bool hovered = abs(aIndex - uHovered) < 0.5;
+    bool marked = aMark > 0.5;
+
+    float elevation = asin(clamp(dir.y, -1.0, 1.0));
+    float bright = mix(uDimAtHorizon, 1.0, clamp(elevation / uFullBright, 0.0, 1.0));
+
+    vColor = (hovered || marked) ? uMarkColor : uRingColor;
+    vAlpha = hovered ? 1.0 : (marked ? bright : 1.0);
+
+    vSizePx = uRingPx * (hovered ? uHoverScale : 1.0) * uPixelRatio;
     gl_PointSize = vSizePx;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
   }
 `;
 
 const RING_FRAG = /* glsl */ `
-  uniform vec3 uRingColor;
   uniform float uStrokePx;
   uniform float uPixelRatio;
 
   varying float vSizePx;
+  varying vec3 vColor;
+  varying float vAlpha;
 
   void main() {
     // Work in device pixels so the stroke is the same width at any size, with a
@@ -156,8 +194,9 @@ const RING_FRAG = /* glsl */ `
     float stroke = uStrokePx * uPixelRatio;
     float ringRadius = 0.5 * vSizePx - 0.5 * stroke - 1.0;
     float alpha = 1.0 - smoothstep(-0.5, 0.5, abs(dist - ringRadius) - 0.5 * stroke);
+    alpha *= vAlpha;
     if (alpha <= 0.0) discard;
-    gl_FragColor = vec4(uRingColor, alpha);
+    gl_FragColor = vec4(vColor, alpha);
   }
 `;
 
@@ -198,6 +237,16 @@ const COLOR_ECLIPSED = new THREE.Color('#86b4d2');
 /** Below the horizon: on the other side of the world. */
 const COLOR_BELOW = new THREE.Color('#3f5b6e');
 
+/** How far a press may travel, in CSS pixels, and still count as a click. */
+const DRAG_SLOP = 6;
+
+/** The pointer over the sky. Coordinates are viewport, as the events give them. */
+export interface PointerHandlers {
+  hover(clientX: number, clientY: number): void;
+  leave(): void;
+  click(clientX: number, clientY: number): void;
+}
+
 interface TickSlot {
   direction: THREE.BufferAttribute;
   state: THREE.BufferAttribute;
@@ -224,6 +273,10 @@ export class SkyScene {
 
   private highlightIndex: THREE.BufferAttribute;
   private highlightCount = 0;
+  /** Per-object 0/1: is this one stuck to the pointer's last click. */
+  private markAttribute: THREE.BufferAttribute;
+  private marked: number[] = [];
+  private readonly ringUniforms;
 
   private trail: THREE.Line;
   private trailPositions: Float32Array;
@@ -231,6 +284,8 @@ export class SkyScene {
 
   private yaw = 0;
   private pitch = THREE.MathUtils.degToRad(38);
+  private pointer: PointerHandlers | null = null;
+  private canvasRect: DOMRect;
 
   constructor(canvas: HTMLCanvasElement, count: number, trailCapacity = 4096) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -292,23 +347,36 @@ export class SkyScene {
 
     // --- highlight rings ----------------------------------------------------
     const ringsGeom = withTicks(new THREE.BufferGeometry());
-    this.highlightIndex = new THREE.BufferAttribute(new Uint32Array(HUD_ROWS), 1).setUsage(THREE.DynamicDrawUsage);
+    // Its own vertex id, so hover can be one uniform rather than an upload per move.
+    const ids = new Float32Array(count);
+    for (let i = 0; i < count; i++) ids[i] = i;
+    ringsGeom.setAttribute('aIndex', new THREE.BufferAttribute(ids, 1));
+    this.markAttribute = new THREE.BufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
+    ringsGeom.setAttribute('aMark', this.markAttribute);
+    // A ring per object is the ceiling: the readout's rows, every mark, and the hover.
+    this.highlightIndex = new THREE.BufferAttribute(new Uint32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setIndex(this.highlightIndex);
     ringsGeom.setDrawRange(0, 0);
+    this.ringUniforms = {
+      uT: this.uniforms.uT,
+      uSinLowest: this.uniforms.uSinLowest,
+      uRadius: this.uniforms.uRadius,
+      uPixelRatio: this.uniforms.uPixelRatio,
+      uRingPx: { value: HIGHLIGHT.diameterPx },
+      uStrokePx: { value: HIGHLIGHT.strokePx },
+      uRingColor: { value: new THREE.Color(HIGHLIGHT.color) },
+      uMarkColor: { value: new THREE.Color(HIGHLIGHT.markColor) },
+      uHovered: { value: -1 },
+      uHoverScale: { value: HIGHLIGHT.hoverScale },
+      uDimAtHorizon: { value: HIGHLIGHT.dimAtHorizon },
+      uFullBright: { value: THREE.MathUtils.degToRad(HIGHLIGHT.fullBrightDeg) },
+    };
     this.rings = new THREE.Points(
       ringsGeom,
       new THREE.ShaderMaterial({
         vertexShader: RING_VERT,
         fragmentShader: RING_FRAG,
-        uniforms: {
-          uT: this.uniforms.uT,
-          uSinLowest: this.uniforms.uSinLowest,
-          uRadius: this.uniforms.uRadius,
-          uPixelRatio: this.uniforms.uPixelRatio,
-          uRingPx: { value: HIGHLIGHT.diameterPx },
-          uStrokePx: { value: HIGHLIGHT.strokePx },
-          uRingColor: { value: new THREE.Color(HIGHLIGHT.color) },
-        },
+        uniforms: this.ringUniforms,
         transparent: true,
         depthWrite: false,
       })
@@ -332,6 +400,7 @@ export class SkyScene {
     this.scene.add(this.trail);
 
     this.attachLook(canvas);
+    this.canvasRect = canvas.getBoundingClientRect();
     this.resize();
     addEventListener('resize', () => this.resize());
   }
@@ -365,8 +434,9 @@ export class SkyScene {
   }
 
   /**
-   * Ring these objects. Indices into the frame columns; only a change reaches the
-   * GPU, and it is at most HUD_ROWS integers.
+   * Ring these objects: what the readout lists, plus every mark, plus the hover.
+   * Indices into the frame columns; only a change reaches the GPU, and a change is
+   * a handful of integers.
    */
   setHighlights(indices: readonly number[]) {
     const index = this.highlightIndex.array as Uint32Array;
@@ -382,6 +452,39 @@ export class SkyScene {
     this.highlightCount = n;
     this.highlightIndex.needsUpdate = true;
     this.rings.geometry.setDrawRange(0, n);
+  }
+
+  /**
+   * Stick the amber ring to these objects and take it off the rest. Only a click
+   * changes this, so re-uploading the whole column is cheaper than tracking ranges.
+   */
+  setMarks(marked: Iterable<number>): void {
+    const mark = this.markAttribute.array as Float32Array;
+    for (const i of this.marked) mark[i] = 0;
+    this.marked = [...marked];
+    for (const i of this.marked) if (i >= 0 && i < mark.length) mark[i] = 1;
+    this.markAttribute.needsUpdate = true;
+  }
+
+  /** The object under the pointer, or -1. One uniform: a sweep uploads nothing. */
+  setHovered(index: number): void {
+    this.ringUniforms.uHovered.value = index;
+  }
+
+  /**
+   * Which object is under these viewport coordinates, given what is on screen now.
+   *
+   * The canvas rectangle is the one taken at the last resize: reading it here would
+   * flush layout inside the render loop, once per frame for as long as the pointer
+   * is over the sky, and the canvas is fixed to the viewport anyway.
+   */
+  pickAt(pair: FramePair, clientX: number, clientY: number): number {
+    return pickNearest({ camera: this.camera, rect: this.canvasRect }, pair, clientX, clientY, HIGHLIGHT.pickRadiusPx);
+  }
+
+  /** The pointer is over something takeable. */
+  setPickCursor(over: boolean): void {
+    this.renderer.domElement.classList.toggle('over', over);
   }
 
   private upload(index: number, frame: SkyFrame): number {
@@ -524,14 +627,28 @@ export class SkyScene {
     return mesh;
   }
 
-  /** Drag to look around. First-person, anchored at the observer. */
+  /** Where the pointer is, and what it took. Picking itself happens in main. */
+  setPointerHandlers(handlers: PointerHandlers): void {
+    this.pointer = handlers;
+  }
+
+  /**
+   * Drag to look around, and the same gesture carries hover and click.
+   *
+   * The two have to be told apart by hand: the canvas fills the window, so every
+   * click to take an object begins as a potential drag. A press that travels less
+   * than DRAG_SLOP is a click; anything further was someone turning to look, and
+   * must not mark whatever happened to be under the release.
+   */
   private attachLook(canvas: HTMLCanvasElement) {
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
+    let travelled = 0;
 
     canvas.addEventListener('pointerdown', (e) => {
       dragging = true;
+      travelled = 0;
       lastX = e.clientX;
       lastY = e.clientY;
       canvas.setPointerCapture(e.pointerId);
@@ -539,17 +656,31 @@ export class SkyScene {
     canvas.addEventListener('pointerup', (e) => {
       dragging = false;
       canvas.releasePointerCapture(e.pointerId);
+      if (travelled < DRAG_SLOP) this.pointer?.click(e.clientX, e.clientY);
+      // The view may have turned under a still pointer: re-read what is beneath it.
+      this.pointer?.hover(e.clientX, e.clientY);
     });
     canvas.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      this.yaw -= (e.clientX - lastX) * 0.004;
+      if (!dragging) {
+        this.pointer?.hover(e.clientX, e.clientY);
+        return;
+      }
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      travelled += Math.abs(dx) + Math.abs(dy);
+      this.yaw -= dx * 0.004;
       this.pitch = THREE.MathUtils.clamp(
-        this.pitch + (e.clientY - lastY) * 0.004,
+        this.pitch + dy * 0.004,
         THREE.MathUtils.degToRad(-20),
         THREE.MathUtils.degToRad(89)
       );
       lastX = e.clientX;
       lastY = e.clientY;
+    });
+    canvas.addEventListener('pointerleave', () => this.pointer?.leave());
+    canvas.addEventListener('pointercancel', () => {
+      dragging = false;
+      this.pointer?.leave();
     });
     canvas.addEventListener(
       'wheel',
@@ -557,6 +688,8 @@ export class SkyScene {
         e.preventDefault();
         this.camera.fov = THREE.MathUtils.clamp(this.camera.fov + e.deltaY * 0.03, 25, 130);
         this.camera.updateProjectionMatrix();
+        // The sky just moved under a still pointer; what it is on has changed.
+        this.pointer?.hover(e.clientX, e.clientY);
       },
       { passive: false }
     );
@@ -596,5 +729,6 @@ export class SkyScene {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.canvasRect = this.renderer.domElement.getBoundingClientRect();
   }
 }

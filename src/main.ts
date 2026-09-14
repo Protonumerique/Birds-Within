@@ -3,10 +3,11 @@ import './style.css';
 import { DATASET, DEBUG, OBSERVER, TRAIL, catalogUrl, type Dataset } from './config';
 import { fetchCatalog, type FetchedCatalog } from './catalog';
 import { geodeticObserver } from './sky-frame';
-import { SkyStream } from './sky-stream';
+import { SkyStream, type FramePair } from './sky-stream';
 import { SkyScene } from './scene';
 import { Clock } from './clock';
 import { createHud } from './ui';
+import { Selection } from './selection';
 import { createDebugPanel } from './debug';
 
 /**
@@ -50,16 +51,43 @@ async function main() {
 
   const clock = new Clock();
   const scene = new SkyScene(canvas, stream.count);
-  const hud = createHud(hudRoot, clock, { names: stream.names, dataset, generatedAt: stream.generatedAt });
+  const selection = new Selection();
+  const hud = createHud(hudRoot, clock, {
+    names: stream.names,
+    dataset,
+    generatedAt: stream.generatedAt,
+    selection,
+  });
   const debug = DEBUG ? createDebugPanel(document.body) : null;
   // ?debug: the running piece, for poking at from the console.
-  if (DEBUG) Object.assign(window, { birds: { stream, scene, clock } });
+  if (DEBUG) Object.assign(window, { birds: { stream, scene, clock, selection } });
 
   let lastHud = -Infinity;
   let lastWall = performance.now();
   let trailIndex = -1;
   let trailCentre = 0;
   let trailPending = false;
+
+  // The pointer over the sky. Its position is remembered and resolved once per
+  // rendered frame: a mousemove can fire several times between two frames, and
+  // picking has to read the blend that is actually on screen anyway.
+  let pair: FramePair | null = null;
+  let pointerAt: { x: number; y: number } | null = null;
+  let lastSelectionVersion = -1;
+
+  scene.setPointerHandlers({
+    hover: (x, y) => {
+      pointerAt = { x, y };
+    },
+    leave: () => {
+      pointerAt = null;
+      selection.setHovered(-1);
+      scene.setPickCursor(false);
+    },
+    click: (x, y) => {
+      if (pair) selection.toggle(scene.pickAt(pair, x, y));
+    },
+  });
 
   function frame() {
     clock.tick();
@@ -68,15 +96,36 @@ async function main() {
 
     // Ticks come from the worker, running ahead of scene time; the GPU blends the
     // two either side of now. Nothing here propagates.
-    const pair = stream.update(now, clock.generation, clock.timeRate);
+    // Spent frames are transferred back to the worker for reuse, so a pair is only
+    // safe to read during the frame it came from: `pair` is cleared, not kept.
+    pair = stream.update(now, clock.generation, clock.timeRate);
     if (pair) scene.showFrames(pair);
 
+    // What the pointer is on, against the blend that is drawn rather than the last
+    // tick - at high time rates a tick spans minutes, and the ring would trail the
+    // object by degrees.
+    if (pointerAt && pair) {
+      const hit = scene.pickAt(pair, pointerAt.x, pointerAt.y);
+      selection.setHovered(hit);
+      scene.setPickCursor(hit >= 0);
+      pointerAt = null;
+    }
+
+    // Hovering and marking reach the rings immediately; the readout follows in the
+    // same breath, so a row never lags the ring it belongs to.
+    const picked = selection.version !== lastSelectionVersion;
+    if (picked) {
+      lastSelectionVersion = selection.version;
+      scene.setMarks(selection.marked);
+      scene.setHovered(selection.hovered);
+    }
+
     // The readout only has to keep up with reading, not with the display.
-    if (wall - lastHud >= 250) {
+    if (picked || wall - lastHud >= 250) {
       hud.update(clock.date, pair?.from ?? null);
-      // The listed objects are ringed on the sky; the rings follow the GPU blend, so
-      // only a change of membership has to reach the scene.
-      scene.setHighlights(hud.listed());
+      // Rings follow the GPU blend on their own, so only a change of membership has
+      // to reach the scene - at most a handful of integers.
+      scene.setHighlights(hud.ringed());
       lastHud = wall;
     }
 

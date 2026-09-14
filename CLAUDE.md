@@ -25,16 +25,10 @@ tags, no hover tooltips, no floating data panels that follow an object. The sky 
 visual marks only. Text belongs in the lower panel, which is meant to stay uncluttered
 and to hold data and, later, controls such as sound.
 
-This constrains the features still to come:
-
-- **Linking sky and names is wanted, but visually.** A ringed object and its row in the
-  list should be connectable at a glance — through the marks themselves (a ring
-  brightening, a row lighting up), not by printing the name next to the object. The
-  approach is not chosen yet.
-- **Mouse interaction** (hunting objects, selecting them) is under consideration. Its
-  response must be part of the image or the sound — a ring, a trail appearing, a voice
-  soloing — never a data readout at the cursor. Any data it surfaces goes to the lower
-  panel.
+The pointer, added 2026-09-14, is built entirely within that rule. Nothing appears at
+the cursor: hovering an object rings it amber, and its row — if it has one — is boxed in
+the same amber and steps 20 px out of the column. One colour in two places is the whole
+link between a mark on the sky and a name in the panel. See *The pointer* below.
 
 ## Locked-in direction
 
@@ -43,7 +37,7 @@ This constrains the features still to come:
 | **Framing** | Observer looking up, rendered abstractly. **No Earth geometry, no globe, no map.** The scene is a hemisphere in horizontal (alt/az) coordinates, camera at the observer. |
 | **Scope** | **Everything CelesTrak publishes: ~21k objects** — every payload, and ~3k of the ~15k debris on orbit. The full ~35k catalogue exists only on Space-Track, which a public page cannot redistribute. See *The catalogue* below. |
 | **Sound** | Phase 2. The data model already emits what it needs. |
-| **Data on screen** | **No tags, labels or info panels on the sky.** Names and numbers live in the lower panel, which also becomes the home for controls (sound, likely). The sky carries only visual marks — rings, trails, haze. See *No tags on the sky* below. |
+| **Data on screen** | **No tags, labels or info panels on the sky.** Names and numbers live in the lower panel, which also becomes the home for controls (sound, likely). The sky carries only visual marks — rings, trails, haze. The pointer obeys this too: it rings objects, it never labels them. See *No tags on the sky* below. |
 | **Hosting** | Standalone subdomain, own repo. |
 | **Stack** | Vite + TypeScript + three.js + satellite.js v7. No framework. |
 
@@ -187,13 +181,49 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
   colour-managed like the clear colour, so full haze is exactly empty sky, not a darker
   band. Not everything being visible is deliberate.
 - **Highlight rings** (`HIGHLIGHT`): a white ring around each object the readout lists —
-  the top `HUD_ROWS` by elevation, and for now the default voices for Step 4. The rings
+  the top `HUD_ROWS` by elevation, and for now the default voices for Step 4 — and an
+  amber one around whatever the pointer is touching or has kept. The rings
   are a second, *indexed* draw of the points' own GPU buffers running the same
   `BLEND_GLSL`, so a ring cannot drift from its object at any time rate; the only CPU work
-  is swapping 14 indices when membership changes.
+  is swapping a handful of indices when membership changes. Hover is **one uniform**
+  compared against a static per-object index, so sweeping the pointer across the sky
+  uploads nothing; a mark is a per-object attribute, re-uploaded only on a click. A
+  marked ring's brightness is computed **in the shader** from the blended elevation, so
+  it dims as the object descends in exact step with what is drawn — and its row dims by
+  the same curve.
 - **Render order is a design decision**, set in `RENDER_ORDER`: points, trail and rings
   under the haze so they emerge together; graticule and compass labels above it so the
   dome stays legible to the horizon.
+
+### The pointer
+
+`src/selection.ts` holds what the pointer is touching and what it has stuck to; the
+scene and the readout both read it, so the two can never disagree. Nothing else knows
+about the mouse.
+
+- **Picking reads the blend, not the tick.** `src/picking.ts` mixes and renormalises the
+  two frames exactly as `BLEND_GLSL` does, then projects. Picking the raw tick would
+  miss by degrees at 1800×, where a tick spans 90 s. It runs **once per rendered frame**
+  at most, however many `pointermove`s arrive, and costs one projection per object above
+  the horizon — the ~6–9% that are up. Everything else falls out on a sign test.
+- **Only what is above the horizon can be taken.** Below-horizon objects are drawn but
+  are on the other side of the world; a mark on one could never enter the readout.
+- **Click, drag and hover are one gesture.** The canvas fills the window, so every click
+  begins as a potential drag. A press that travels under `DRAG_SLOP` (6 px) is a click;
+  anything further was someone turning to look and must not mark what it lands on.
+- **A click sticks; clicking again lets go.** A kept object holds its row however far it
+  falls, and the readout stays sorted by elevation, so it slides down the list rather
+  than sitting apart from it. **It is let go when it sets** — the readout lists what is
+  overhead, and an object below the horizon has nothing left to show. Its row is then
+  free for whatever has risen.
+- The sky can hold more rings than the panel can hold rows: past `HUD_ROWS` marks, the
+  lowest keep their rings and lose their rows.
+- `HOVER_KEEPS_ROW` decides whether pointing at an object the readout is *not* listing
+  gives it a row. On, the panel answers "what is that one?" as you sweep, at the cost of
+  the rows under it shifting by one each time. Off, hovering only recolours rows that
+  are already there. Aesthetic, so it is answerable by looking; it is on.
+- The trail follows the **most recent mark**, falling back to whatever is highest when
+  nothing is kept.
 
 ### The tick stream
 
