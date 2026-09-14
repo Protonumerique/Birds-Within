@@ -215,11 +215,30 @@ a neutral `#4a4f54`, never blue, for the same reason.
 is amber until a person touches it, which is what makes a ring read as attention
 rather than as a property of the object.
 
-**Wreckage differs in texture, not hue.** `KIND_LOOK` gives rocket bodies and debris a
-smaller point and a weaker glow — they carry the same state colours as everything
-else. A payload flares; wreckage stays a flat speck. Adding a fourth and fifth hue
-would have broken the two-axis rule for a distinction that is already legible as
-brightness.
+**Debris is a shard, not a light.** It emits nothing, reflects badly, tumbles, and is
+the reason a spacecraft has to move — so it is drawn as a **slowly turning triangle**,
+flat, with no glow, each fragment at its own rate and phase from a hash of its index.
+A rocket body stays a round mark, smaller and without the flare.
+
+Shape rather than brightness, because **brightness was already spoken for**. This was
+measured, not guessed: an isolated debris object against an isolated payload, both
+sunlit and at comparable range, rendered at **0.67× peak and 0.63× area**. Real, but
+range varies a point's size four-fold and shadow varies its brightness three-fold, so
+a mark differing only in *amount* cannot be read against that noise. A different
+*kind* of mark survives it. A fourth and fifth hue would have broken the two-axis rule
+instead.
+
+It is free. The triangle is a signed distance field inside the same point sprite — no
+extra geometry, no extra draw call, no vertex work, only fragments inside debris
+sprites. Measured on a **software rasteriser**, which exaggerates fragment cost
+enormously: every object a light gave p50 28.1 and 28.6 ms, every object a shard gave
+27.8 and 28.5 ms. Indistinguishable. A real tetrahedron would need instanced meshes
+and at four to sixteen pixels would look exactly like this anyway.
+
+The tumble reads `uTime` in **wall seconds — the one quantity in the app deliberately
+not taken from the clock.** It is a property of the mark, not of the orbit: at 1800× a
+scene-time tumble would strobe, and there is no rotation rate in the elements to be
+faithful to.
 
 The `kind` byte this reads has been in the catalogue since Step 1 and went unused
 until now. It is a **heuristic on the name** (`kindFromName`): GP data carries no
@@ -288,6 +307,18 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
 - **Render order is a design decision**, set in `RENDER_ORDER`: points, tracks and rings
   under the haze so they emerge together; graticule and compass labels above it so the
   dome stays legible to the horizon.
+
+**Two traps, both of which look like something else entirely:**
+
+- **`gl_PointSize` is vertex-only.** Reading it in a fragment shader is a compile
+  error, three.js logs it to the console and carries on, and the result is that *the
+  entire points draw vanishes* — an empty sky with the rings still on it, which reads
+  as a data problem, not a shader one. Pass the size down as a varying (`vSizePx`), as
+  both point and ring shaders now do.
+- **Looking at the zenith kills the camera.** At pitch 90° the view direction is
+  parallel to the camera's up vector, `lookAt` cannot build a basis, and the whole
+  scene disappears. `render` clamps pitch to ±89° itself rather than trusting whoever
+  set it — the drag handler is not the only thing that does, debug snippets included.
 
 ### The pointer
 

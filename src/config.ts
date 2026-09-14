@@ -95,9 +95,31 @@ export const PALETTE = {
  * `active` is payloads only, so this is visible almost entirely on `?catalog=full`.
  */
 export const KIND_LOOK = {
-  /** size multiplier, glow multiplier. 1 / 1 is a payload. */
-  rocketBody: { size: 0.85, glow: 0.55 },
-  debris: { size: 0.65, glow: 0.4 },
+  /** A spent upper stage is still a payload's mark: smaller, and without the flare. */
+  rocketBody: { size: 0.9, glow: 0.5 },
+  /**
+   * Debris is not a light. It emits nothing, reflects badly, tumbles, and is the
+   * reason a spacecraft has to move - so it is drawn as a **shard**: a flat triangle,
+   * no glow, turning slowly, each fragment at its own rate and phase.
+   *
+   * Shape rather than brightness, because brightness was already spoken for. Range
+   * varies a point's size four-fold and shadow varies its brightness three-fold, so a
+   * debris mark that differed only in amount could not be read against that noise -
+   * measured at 0.67x peak and swamped. A different *kind* of mark survives it.
+   *
+   * It costs nothing: the triangle is a signed distance field inside the same point
+   * sprite, so there is no extra geometry, no extra draw, and no vertex work. Only
+   * fragments inside debris sprites pay for it. A real tetrahedron would need instanced
+   * meshes, and at four to sixteen pixels would look exactly like this anyway.
+   */
+  debris: {
+    /** Slightly larger than a payload: a triangle needs pixels before it reads as one. */
+    size: 1.2,
+    /** Peak brightness against a payload's core. */
+    intensity: 0.5,
+    /** Turns per minute, before each fragment's own hash scales it. */
+    spinRpm: 2.5,
+  },
 };
 
 export const SKY = {

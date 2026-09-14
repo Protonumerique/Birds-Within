@@ -86,6 +86,7 @@ const POINT_VERT = /* glsl */ `
 
   attribute float aChoir;
   attribute float aKind;
+  attribute float aIndex;
 
   uniform float uRadius;
   uniform float uPixelRatio;
@@ -94,11 +95,19 @@ const POINT_VERT = /* glsl */ `
   uniform vec3 uColorBelow;
   uniform vec3 uColorChoir;
   uniform vec2 uRocketLook;
-  uniform vec2 uDebrisLook;
+  uniform vec3 uDebrisLook;
+  uniform float uTime;
 
   varying float vAlpha;
   varying vec3 vColor;
   varying float vGlow;
+  /** 0 = a light, 1 = a shard. */
+  varying float vShard;
+  /** cos/sin of this fragment's own tumble, so no two agree. */
+  varying vec2 vSpin;
+  /** The sprite's size in device pixels. gl_PointSize is vertex-only - a fragment
+      shader that reads it fails to compile, and the whole points draw disappears. */
+  varying float vSizePx;
 
   void main() {
     vec3 dir;
@@ -109,6 +118,9 @@ const POINT_VERT = /* glsl */ `
       vAlpha = 0.0;
       vColor = vec3(0.0);
       vGlow = 0.0;
+      vShard = 0.0;
+      vSpin = vec2(1.0, 0.0);
+      vSizePx = 0.0;
       return;
     }
 
@@ -119,13 +131,22 @@ const POINT_VERT = /* glsl */ `
     vColor = choir ? uColorChoir : (above ? (lit ? uColorLit : uColorEclipsed) : uColorBelow);
     vAlpha = above ? (choir ? 1.0 : (lit ? 1.0 : 0.6)) : 0.3;
 
-    // KIND: 0 payload, 1 rocket body, 2 debris.
-    vec2 look = aKind > 1.5 ? uDebrisLook : (aKind > 0.5 ? uRocketLook : vec2(1.0));
-    vGlow = look.y;
+    // KIND: 0 payload, 1 rocket body, 2 debris. Debris is a shard, not a light: a
+    // turning triangle drawn in the fragment shader, so it costs no geometry.
+    vShard = aKind > 1.5 ? 1.0 : 0.0;
+    float size = aKind > 1.5 ? uDebrisLook.x : (aKind > 0.5 ? uRocketLook.x : 1.0);
+    vGlow = aKind > 1.5 ? uDebrisLook.y : (aKind > 0.5 ? uRocketLook.y : 1.0);
+
+    // A hash off the object's own index: every fragment tumbles at its own rate, from
+    // its own starting angle, and the field never falls into step with itself.
+    float h = fract(sin(aIndex * 12.9898) * 43758.5453);
+    float angle = uTime * uDebrisLook.z * mix(0.55, 1.7, h) + h * 6.2831853;
+    vSpin = vec2(cos(angle), sin(angle));
 
     // Nearer objects read as larger. Purely a depth cue - the dome has no scale.
     float nearness = clamp(1.0 - (range - 400.0) / 4000.0, 0.25, 1.0);
-    gl_PointSize = (above ? 16.0 : 8.0) * nearness * look.x * uPixelRatio;
+    vSizePx = (above ? 16.0 : 8.0) * nearness * size * uPixelRatio;
+    gl_PointSize = vSizePx;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
   }
 `;
@@ -134,13 +155,38 @@ const POINT_FRAG = /* glsl */ `
   varying float vAlpha;
   varying vec3 vColor;
   varying float vGlow;
+  varying float vShard;
+  varying vec2 vSpin;
+  varying float vSizePx;
+
+  /** iq's equilateral triangle, signed: negative inside. */
+  float sdTriangle(vec2 p, float r) {
+    const float k = 1.7320508;
+    p.x = abs(p.x) - r;
+    p.y = p.y + r / k;
+    if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) * 0.5;
+    p.x -= clamp(p.x, -2.0 * r, 0.0);
+    return -length(p) * sign(p.y);
+  }
+
   void main() {
-    // Soft round sprite with a hot core, so dense clusters still read as many.
     // Blending is additive, which multiplies rgb by alpha and adds: intensity
     // therefore belongs in rgb, and the alpha channel stays at 1.
-    //
-    // vGlow scales only the core: a payload flares, wreckage stays a flat speck.
     vec2 d = gl_PointCoord - vec2(0.5);
+
+    if (vShard > 0.5) {
+      // Debris: a flat shard, turning. No core, no halo - it is not a light.
+      vec2 p = mat2(vSpin.x, -vSpin.y, vSpin.y, vSpin.x) * d;
+      float t = sdTriangle(p, 0.40);
+      // One-pixel edge, in sprite units, so it stays crisp at any size.
+      float aa = 1.5 / max(vSizePx, 1.0);
+      float fill = 1.0 - smoothstep(-aa, aa, t);
+      if (fill <= 0.0) discard;
+      gl_FragColor = vec4(vColor * vGlow * fill * vAlpha, 1.0);
+      return;
+    }
+
+    // Soft round sprite with a hot core, so dense clusters still read as many.
     float r = length(d) * 2.0;
     if (r > 1.0) discard;
     float core = smoothstep(1.0, 0.0, r);
@@ -285,6 +331,12 @@ const COLOR_CHOIR = new THREE.Color(PALETTE.geostationary);
 /** How far a press may travel, in CSS pixels, and still count as a click. */
 const DRAG_SLOP = 6;
 
+/** How close to straight up or down the camera may look. See `render`. */
+const ZENITH_LIMIT = {
+  min: THREE.MathUtils.degToRad(-89),
+  max: THREE.MathUtils.degToRad(89),
+};
+
 /** The pointer over the sky. Coordinates are viewport, as the events give them. */
 export interface PointerHandlers {
   hover(clientX: number, clientY: number): void;
@@ -316,7 +368,21 @@ export class SkyScene {
     uColorBelow: { value: COLOR_BELOW },
     uColorChoir: { value: COLOR_CHOIR },
     uRocketLook: { value: new THREE.Vector2(KIND_LOOK.rocketBody.size, KIND_LOOK.rocketBody.glow) },
-    uDebrisLook: { value: new THREE.Vector2(KIND_LOOK.debris.size, KIND_LOOK.debris.glow) },
+    /** size, intensity, radians per second. */
+    uDebrisLook: {
+      value: new THREE.Vector3(
+        KIND_LOOK.debris.size,
+        KIND_LOOK.debris.intensity,
+        (KIND_LOOK.debris.spinRpm * Math.PI * 2) / 60
+      ),
+    },
+    /**
+     * Seconds of WALL time, not scene time - the one quantity in the app that is
+     * deliberately not read from the clock. The tumble is a property of the mark, not
+     * of the orbit; at 1800x a scene-time tumble would strobe, and there is no real
+     * rotation rate in the elements to be faithful to anyway.
+     */
+    uTime: { value: 0 },
   };
 
   private highlightIndex: THREE.BufferAttribute;
@@ -384,6 +450,11 @@ export class SkyScene {
     // and the rings, which must agree about which objects are the belt.
     this.choirAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
     this.kindAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
+    // Its own vertex id. The rings compare it against the hover uniform; the points
+    // hash it into a tumble phase, so every fragment of debris turns differently.
+    const ids = new Float32Array(count);
+    for (let i = 0; i < count; i++) ids[i] = i;
+    const indexAttribute = new THREE.BufferAttribute(ids, 1);
 
     // Both geometries hold the SAME attribute objects, so three.js uploads each tick
     // once and the rings read exactly the buffers the points do.
@@ -395,6 +466,7 @@ export class SkyScene {
       geom.setAttribute('aState1', this.slots[1].state);
       geom.setAttribute('aChoir', this.choirAttribute);
       geom.setAttribute('aKind', this.kindAttribute);
+      geom.setAttribute('aIndex', indexAttribute);
       return geom;
     };
 
@@ -417,10 +489,6 @@ export class SkyScene {
 
     // --- highlight rings ----------------------------------------------------
     const ringsGeom = withTicks(new THREE.BufferGeometry());
-    // Its own vertex id, so hover can be one uniform rather than an upload per move.
-    const ids = new Float32Array(count);
-    for (let i = 0; i < count; i++) ids[i] = i;
-    ringsGeom.setAttribute('aIndex', new THREE.BufferAttribute(ids, 1));
     this.markAttribute = new THREE.BufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setAttribute('aMark', this.markAttribute);
     // A ring per object is the ceiling: the readout's rows, every mark, and the hover.
@@ -771,11 +839,7 @@ export class SkyScene {
       const dy = e.clientY - lastY;
       travelled += Math.abs(dx) + Math.abs(dy);
       this.yaw -= dx * 0.004;
-      this.pitch = THREE.MathUtils.clamp(
-        this.pitch + dy * 0.004,
-        THREE.MathUtils.degToRad(-20),
-        THREE.MathUtils.degToRad(89)
-      );
+      this.pitch = THREE.MathUtils.clamp(this.pitch + dy * 0.004, THREE.MathUtils.degToRad(-20), ZENITH_LIMIT.max);
       lastX = e.clientX;
       lastY = e.clientY;
     });
@@ -877,10 +941,17 @@ export class SkyScene {
   }
 
   render() {
+    this.uniforms.uTime.value = performance.now() / 1000;
+    // Clamped here, not only where the drag sets it. Looking exactly at the zenith
+    // makes the view direction parallel to the camera's up vector, `lookAt` cannot
+    // build a basis from it, and the entire scene disappears - which looks like a
+    // rendering failure rather than a gimbal lock. Anything that sets pitch directly,
+    // a debug snippet included, has to be safe.
+    const pitch = THREE.MathUtils.clamp(this.pitch, ZENITH_LIMIT.min, ZENITH_LIMIT.max);
     const dir = new THREE.Vector3(
-      Math.sin(this.yaw) * Math.cos(this.pitch),
-      Math.sin(this.pitch),
-      -Math.cos(this.yaw) * Math.cos(this.pitch)
+      Math.sin(this.yaw) * Math.cos(pitch),
+      Math.sin(pitch),
+      -Math.cos(this.yaw) * Math.cos(pitch)
     );
     this.camera.lookAt(dir);
     this.renderer.render(this.scene, this.camera);
