@@ -52,6 +52,8 @@ function markBrightness(elevation: number): number {
 
 const markColor = (alpha: number) => `rgba(${MARK_RGB[0]}, ${MARK_RGB[1]}, ${MARK_RGB[2]}, ${alpha.toFixed(2)})`;
 
+const releaseBelow = (HIGHLIGHT.releaseBelowDeg * Math.PI) / 180;
+
 export function createHud(root: HTMLElement, clock: Clock, source: HudSource): Hud {
   const { names, selection } = source;
   /**
@@ -191,11 +193,11 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
         above.sort((a, b) => frame.elevation[b]! - frame.elevation[a]!);
       }
 
-      // A mark is let go when its object sets: the readout lists what is overhead,
-      // and an object on the far side of the world has nothing left to show. Its row
-      // is then free for whatever has risen in its place.
+      // A mark is let go when its object sinks into the haze: the readout lists what
+      // is overhead, and an object a degree off the horizon has nothing left to show.
+      // Its row is then free for whatever has risen in its place.
       for (const i of selection.marked) {
-        if (frame.range[i]! < 0 || frame.elevation[i]! <= 0) selection.release(i);
+        if (frame.range[i]! < 0 || frame.elevation[i]! <= releaseBelow) selection.release(i);
       }
 
       /**

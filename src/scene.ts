@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { HIGHLIGHT, SKY } from './config';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { HIGHLIGHT, SKY, TRAIL } from './config';
 import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
 import type { FramePair } from './sky-stream';
 import { pickNearest } from './picking';
@@ -58,6 +61,12 @@ const BLEND_GLSL = /* glsl */ `
     return true;
   }
 `;
+
+/** A track's last few degrees above the horizon, dissolving to nothing at it. */
+function fade(y: number, top: number): number {
+  const t = Math.min(Math.max(y / top, 0), 1);
+  return t * t * (3 - 2 * t);
+}
 
 /** Outside clip space with zero size: the vertex draws nothing. */
 const HIDE_GLSL = /* glsl */ `gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0;`;
@@ -278,16 +287,26 @@ export class SkyScene {
   private marked: number[] = [];
   private readonly ringUniforms;
 
-  private trail: THREE.Line;
-  private trailPositions: Float32Array;
-  private trailCapacity: number;
+  private tracks: LineSegments2;
+  private trackMaterial: LineMaterial;
+  private trackPositions: Float32Array;
+  private trackColors: Float32Array;
+  private trackBuffer: THREE.InterleavedBuffer;
+  private trackColorBuffer: THREE.InterleavedBuffer;
+  /** Segments, not samples: one track of N samples costs N-1 of these. */
+  private trackCapacity: number;
 
   private yaw = 0;
   private pitch = THREE.MathUtils.degToRad(38);
   private pointer: PointerHandlers | null = null;
   private canvasRect: DOMRect;
 
-  constructor(canvas: HTMLCanvasElement, count: number, trailCapacity = 4096) {
+  /**
+   * `maxTracks` sizes the track buffers, counting only the segments actually drawn -
+   * the parts above the horizon. A geostationary object's whole 70-minute track is
+   * up, so that is the case this is sized for; a low pass contributes a tenth of it.
+   */
+  constructor(canvas: HTMLCanvasElement, count: number, maxTracks = 24) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setClearColor(SKY_COLOR, 1);
@@ -385,19 +404,31 @@ export class SkyScene {
     this.rings.renderOrder = RENDER_ORDER.rings;
     this.scene.add(this.rings);
 
-    // --- trail --------------------------------------------------------------
-    this.trailCapacity = trailCapacity;
-    this.trailPositions = new Float32Array(trailCapacity * 3);
-    const trailGeom = new THREE.BufferGeometry();
-    trailGeom.setAttribute('position', new THREE.BufferAttribute(this.trailPositions, 3));
-    trailGeom.setDrawRange(0, 0);
-    this.trail = new THREE.Line(
-      trailGeom,
-      new THREE.LineBasicMaterial({ color: 0x7fa6bf, transparent: true, opacity: 0.6 })
-    );
-    this.trail.frustumCulled = false;
-    this.trail.renderOrder = RENDER_ORDER.trail;
-    this.scene.add(this.trail);
+    // --- tracks ---------------------------------------------------------------
+    // Real pixel-width lines. GL's own `linewidth` is one pixel whatever you ask for
+    // on ANGLE, which is most of the desktop; these are instanced quads instead, so
+    // the width in TRAIL means something. Every track shares one draw.
+    const samples = Math.ceil(((TRAIL.pastMinutes + TRAIL.futureMinutes) * 60) / TRAIL.stepSeconds) + 1;
+    this.trackCapacity = maxTracks * samples;
+    this.trackPositions = new Float32Array(this.trackCapacity * 6);
+    this.trackColors = new Float32Array(this.trackCapacity * 6);
+    const trackGeom = new LineSegmentsGeometry();
+    trackGeom.setPositions(this.trackPositions);
+    trackGeom.setColors(this.trackColors);
+    trackGeom.instanceCount = 0;
+    this.trackBuffer = (trackGeom.attributes.instanceStart as THREE.InterleavedBufferAttribute).data;
+    this.trackColorBuffer = (trackGeom.attributes.instanceColorStart as THREE.InterleavedBufferAttribute).data;
+    this.trackMaterial = new LineMaterial({
+      vertexColors: true,
+      linewidth: TRAIL.widthPx,
+      transparent: true,
+      opacity: TRAIL.opacity,
+      depthWrite: false,
+    });
+    this.tracks = new LineSegments2(trackGeom, this.trackMaterial);
+    this.tracks.frustumCulled = false;
+    this.tracks.renderOrder = RENDER_ORDER.trail;
+    this.scene.add(this.tracks);
 
     this.attachLook(canvas);
     this.canvasRect = canvas.getBoundingClientRect();
@@ -695,22 +726,83 @@ export class SkyScene {
     );
   }
 
-  /** Draw one selected object's track across the dome, from unit directions. */
-  setTrail(directions: Float32Array) {
+  /**
+   * Draw these tracks across the dome, from unit directions.
+   *
+   * Each is **cut exactly at the horizon** and dissolved over the last few degrees
+   * above it, so an orbit leaves the image where the object would leave the sky
+   * instead of ploughing on through the ground. The crossing segment is clipped at
+   * y = 0 rather than dropped, so the end of a track never depends on where the
+   * 20-second samples happened to fall.
+   *
+   * The fade is baked into the vertex colours rather than into alpha: the sky and
+   * the ground are both within a shade of black, so darkening and dissolving look
+   * the same, and this way one material draws every track at once.
+   */
+  setTracks(tracks: readonly { directions: Float32Array; color: THREE.Color }[]): void {
     const R = SKY.radius * 0.995;
-    const lowest = this.uniforms.uSinLowest.value;
+    const fadeTop = Math.sin(THREE.MathUtils.degToRad(TRAIL.fadeTopDeg));
+    const pos = this.trackPositions;
+    const col = this.trackColors;
     let n = 0;
 
-    for (let i = 0; i + 2 < directions.length && n < this.trailCapacity; i += 3) {
-      if (directions[i + 1]! < lowest) continue;
-      this.trailPositions[n * 3] = directions[i]! * R;
-      this.trailPositions[n * 3 + 1] = directions[i + 1]! * R;
-      this.trailPositions[n * 3 + 2] = directions[i + 2]! * R;
-      n++;
+    for (const { directions, color } of tracks) {
+      const samples = Math.floor(directions.length / 3);
+      for (let s = 0; s + 1 < samples; s++) {
+        if (n >= this.trackCapacity) break;
+
+        let ax = directions[s * 3]!;
+        let ay = directions[s * 3 + 1]!;
+        let az = directions[s * 3 + 2]!;
+        let bx = directions[s * 3 + 3]!;
+        let by = directions[s * 3 + 4]!;
+        let bz = directions[s * 3 + 5]!;
+
+        if (ay <= 0 && by <= 0) continue;
+
+        if (ay < 0 || by < 0) {
+          // Where the track crosses the horizon. Renormalised, so the cut lands on
+          // the horizon circle rather than a little inside it.
+          const t = ay / (ay - by);
+          let cx = ax + (bx - ax) * t;
+          let cz = az + (bz - az) * t;
+          const len = Math.hypot(cx, cz) || 1;
+          cx /= len;
+          cz /= len;
+          if (ay < 0) {
+            ax = cx;
+            ay = 0;
+            az = cz;
+          } else {
+            bx = cx;
+            by = 0;
+            bz = cz;
+          }
+        }
+
+        const k = n * 6;
+        pos[k] = ax * R;
+        pos[k + 1] = ay * R;
+        pos[k + 2] = az * R;
+        pos[k + 3] = bx * R;
+        pos[k + 4] = by * R;
+        pos[k + 5] = bz * R;
+
+        const fa = fade(ay, fadeTop);
+        const fb = fade(by, fadeTop);
+        col[k] = color.r * fa;
+        col[k + 1] = color.g * fa;
+        col[k + 2] = color.b * fa;
+        col[k + 3] = color.r * fb;
+        col[k + 4] = color.g * fb;
+        col[k + 5] = color.b * fb;
+        n++;
+      }
     }
 
-    this.trail.geometry.setDrawRange(0, n);
-    this.trail.geometry.attributes.position!.needsUpdate = true;
+    this.tracks.geometry.instanceCount = n;
+    this.trackBuffer.needsUpdate = true;
+    this.trackColorBuffer.needsUpdate = true;
   }
 
   render() {
@@ -730,5 +822,7 @@ export class SkyScene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.canvasRect = this.renderer.domElement.getBoundingClientRect();
+    // Pixel-width lines need to know how large a pixel is.
+    this.trackMaterial.resolution.set(w, h);
   }
 }

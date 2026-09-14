@@ -191,7 +191,21 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
   marked ring's brightness is computed **in the shader** from the blended elevation, so
   it dims as the object descends in exact step with what is drawn — and its row dims by
   the same curve.
-- **Render order is a design decision**, set in `RENDER_ORDER`: points, trail and rings
+- **Tracks** (`TRAIL`): where a kept object has been and is going, 35 minutes either
+  way. Every track shares one draw, and each is **cut exactly at the horizon** — the
+  crossing segment is clipped at y = 0 rather than dropped, so the end of a track never
+  depends on where the 20-second samples happened to fall — and dissolved over the last
+  `fadeTopDeg` above it, so an orbit leaves the image instead of ploughing through the
+  ground. The fade is baked into the vertex colours, not alpha: sky and ground are both
+  within a shade of black, so darkening and dissolving look identical, and one material
+  then draws every track at once. They are `LineSegments2`, three's instanced-quad fat
+  lines, because GL's own `linewidth` is one pixel whatever you ask for on ANGLE —
+  `TRAIL.widthPx` and `TRAIL.opacity` are therefore real controls. `src/trails.ts` caps
+  requests in flight and only recomputes a track once scene time has drifted
+  `refreshSeconds`: a track is a few hundred JS propagations on the same worker thread
+  the frame ticks come from, and frames matter more. At 1800× the tracks lag, which is
+  right — at that rate a 70-minute track crosses the sky in two seconds.
+- **Render order is a design decision**, set in `RENDER_ORDER`: points, tracks and rings
   under the haze so they emerge together; graticule and compass labels above it so the
   dome stays legible to the horizon.
 
@@ -213,17 +227,19 @@ about the mouse.
   anything further was someone turning to look and must not mark what it lands on.
 - **A click sticks; clicking again lets go.** A kept object holds its row however far it
   falls, and the readout stays sorted by elevation, so it slides down the list rather
-  than sitting apart from it. **It is let go when it sets** — the readout lists what is
-  overhead, and an object below the horizon has nothing left to show. Its row is then
-  free for whatever has risen.
+  than sitting apart from it. **It is let go below `HIGHLIGHT.releaseBelowDeg`** (2°),
+  not at the horizon: the haze is opaque down there, so an object creeping through its
+  last degree is already gone from the image while its row sits on. Two degrees also
+  settles the geostationary case — a satellite parked at +0.4° in the south *never*
+  sets, and at a 0° threshold would hold its row for the life of the page.
 - The sky can hold more rings than the panel can hold rows: past `HUD_ROWS` marks, the
   lowest keep their rings and lose their rows.
 - `HOVER_KEEPS_ROW` decides whether pointing at an object the readout is *not* listing
   gives it a row. On, the panel answers "what is that one?" as you sweep, at the cost of
   the rows under it shifting by one each time. Off, hovering only recolours rows that
   are already there. Aesthetic, so it is answerable by looking; it is on.
-- The trail follows the **most recent mark**, falling back to whatever is highest when
-  nothing is kept.
+- **Every kept object gets a track** (`TRAIL.allMarked`), falling back to a single one
+  through whatever is highest when nothing is kept. See *Tracks* below.
 
 ### The tick stream
 

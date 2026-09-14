@@ -1,6 +1,8 @@
 import './style.css';
 
-import { DATASET, DEBUG, OBSERVER, TRAIL, catalogUrl, type Dataset } from './config';
+import * as THREE from 'three';
+
+import { DATASET, DEBUG, HIGHLIGHT, OBSERVER, TRAIL, catalogUrl, type Dataset } from './config';
 import { fetchCatalog, type FetchedCatalog } from './catalog';
 import { geodeticObserver } from './sky-frame';
 import { SkyStream, type FramePair } from './sky-stream';
@@ -8,6 +10,7 @@ import { SkyScene } from './scene';
 import { Clock } from './clock';
 import { createHud } from './ui';
 import { Selection } from './selection';
+import { Trails } from './trails';
 import { createDebugPanel } from './debug';
 
 /**
@@ -64,9 +67,6 @@ async function main() {
 
   let lastHud = -Infinity;
   let lastWall = performance.now();
-  let trailIndex = -1;
-  let trailCentre = 0;
-  let trailPending = false;
 
   // The pointer over the sky. Its position is remembered and resolved once per
   // rendered frame: a mousemove can fire several times between two frames, and
@@ -74,6 +74,14 @@ async function main() {
   let pair: FramePair | null = null;
   let pointerAt: { x: number; y: number } | null = null;
   let lastSelectionVersion = -1;
+
+  const trails = new Trails(stream);
+  const tracked: number[] = [];
+  const drawn: { directions: Float32Array; color: THREE.Color }[] = [];
+  let lastTrailVersion = -1;
+  let lastMarksVersion = -1;
+  const markColor = new THREE.Color(HIGHLIGHT.markColor);
+  const trackColor = new THREE.Color(TRAIL.color);
 
   scene.setPointerHandlers({
     hover: (x, y) => {
@@ -129,19 +137,32 @@ async function main() {
       lastHud = wall;
     }
 
-    // Recompute the trail when the selection changes, or when enough scene time has
-    // passed for it to have moved. One request at a time; a stale answer is dropped.
-    const selected = hud.selectedIndex();
-    if (selected >= 0 && !trailPending && (selected !== trailIndex || Math.abs(now - trailCentre) > 20_000)) {
-      trailPending = true;
-      const centre = now;
-      stream.requestTrack(selected, centre, TRAIL).then((directions) => {
-        trailPending = false;
-        if (selected !== hud.selectedIndex()) return;
-        scene.setTrail(directions);
-        trailIndex = selected;
-        trailCentre = centre;
-      });
+    // Tracks for everything being kept - or for the single highest object when
+    // nothing is. The worker answers these on the same thread it computes frames on,
+    // so Trails caps how many are asked for at once and how often.
+    tracked.length = 0;
+    if (TRAIL.allMarked) {
+      for (const i of selection.marked) tracked.push(i);
+    } else if (selection.newest >= 0) {
+      tracked.push(selection.newest);
+    }
+    if (tracked.length === 0) {
+      const fallback = hud.selectedIndex();
+      if (fallback >= 0) tracked.push(fallback);
+    }
+    trails.update(tracked, now);
+
+    // Rebuild the geometry only when a track lands or is dropped, or when a mark
+    // changes one's colour - never on hover, which fires as fast as the pointer moves.
+    if (trails.version !== lastTrailVersion || selection.marksVersion !== lastMarksVersion) {
+      lastTrailVersion = trails.version;
+      lastMarksVersion = selection.marksVersion;
+      drawn.length = 0;
+      for (const i of tracked) {
+        const directions = trails.get(i);
+        if (directions) drawn.push({ directions, color: selection.isMarked(i) ? markColor : trackColor });
+      }
+      scene.setTracks(drawn);
     }
 
     scene.render();

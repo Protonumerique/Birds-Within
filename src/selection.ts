@@ -14,6 +14,11 @@ export class Selection {
 
   /** Bumped whenever anything here changes, so readers can upload only on a change. */
   version = 0;
+  /**
+   * Bumped only when a mark is taken or let go, never by hover. Tracks are rebuilt
+   * from this: the pointer moves far too often to rebuild them on `version`.
+   */
+  marksVersion = 0;
 
   private hoveredIndex = -1;
   /** Marking order, most recent last: the newest mark is the one wearing the trail. */
@@ -44,6 +49,7 @@ export class Selection {
       this.order.push(index);
     }
     this.version++;
+    this.marksVersion++;
   }
 
   /** Drop a mark the user did not drop - an object that has set below the horizon. */
@@ -51,6 +57,7 @@ export class Selection {
     if (!this.marked.delete(index)) return;
     this.order = this.order.filter((i) => i !== index);
     this.version++;
+    this.marksVersion++;
   }
 
   /** The most recently marked object, or -1. Gets the trail. */

@@ -113,8 +113,25 @@ export const HIGHLIGHT = {
   fullBrightDeg: 55,
   /** How near the pointer has to be, in CSS pixels, to take an object. */
   pickRadiusPx: 18,
+  /**
+   * A kept object is let go once it sinks below this, and its row goes back to
+   * whatever has risen.
+   *
+   * Not zero. The haze is opaque at the horizon, so anything under a couple of
+   * degrees is already gone from the image - holding its row while it creeps the
+   * last degree reads as the readout being stuck. It also settles the geostationary
+   * case: a satellite parked at +0.4° in the south never sets at all, and would
+   * otherwise hold its row for the life of the page.
+   */
+  releaseBelowDeg: 2,
 };
 
+/**
+ * The tracks drawn through kept objects - where each has been and where it is going.
+ *
+ * Drawn as real pixel-width lines (three's `LineSegments2`), not GL hairlines, which
+ * ANGLE renders one pixel wide whatever you ask for.
+ */
 export const TRAIL = {
   /** Minutes of past track to draw. */
   pastMinutes: 35,
@@ -122,6 +139,32 @@ export const TRAIL = {
   futureMinutes: 35,
   /** Seconds between sampled points along a trail. */
   stepSeconds: 20,
+  /** Line width in CSS pixels. */
+  widthPx: 1.4,
+  /** Opacity of a track at full brightness. */
+  opacity: 0.5,
+  /**
+   * A track dissolves from this elevation down and is cut exactly at the horizon,
+   * so an orbit leaves the image rather than diving through the ground. Keep it near
+   * the haze's own scale - below a couple of degrees nothing is visible anyway.
+   */
+  fadeTopDeg: 7,
+  /** Track colour for an object that is drawn but not kept. Kept ones use HIGHLIGHT.markColor. */
+  color: '#7fa6bf',
+  /**
+   * A track through every kept object, not only the most recent one. Several at once
+   * is the point of keeping several - and also the thing most likely to turn the sky
+   * into wool, so it is one line to turn off.
+   */
+  allMarked: true,
+  /**
+   * Scene seconds a track may drift before it is recomputed. A track spans 70 minutes,
+   * so a minute of drift is invisible; at high time rates this is what stops the
+   * worker being asked for tracks faster than it can answer frames.
+   */
+  refreshSeconds: 60,
+  /** Track requests allowed out at once, across all kept objects. */
+  maxInflight: 2,
 };
 
 export const CLOCK = {
