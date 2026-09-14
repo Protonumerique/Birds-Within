@@ -10,10 +10,11 @@ export const OBSERVER = {
 /**
  * Which packed catalogue to load - all src/catalog-format.ts binaries in public/data/.
  *
- * - `active`    every payload CelesTrak lists as active. 16,563 on 2026-09-13.
  * - `full`      the union of every CelesTrak GP dataset. 20,933 on 2026-09-13 - all
  *               the sky CelesTrak publishes: every payload, but only ~3k of the ~15k
- *               debris on orbit. See scripts/catalog-sources.mjs.
+ *               debris on orbit. The default. See scripts/catalog-sources.mjs.
+ * - `active`    every payload CelesTrak lists as active. 16,563 on 2026-09-13 - the
+ *               same sky with the wreckage removed.
  * - `synthetic` ~1450 INVENTED orbits, committed so development works offline. Not
  *               real objects, and the HUD says so whenever it is showing.
  *
@@ -25,7 +26,16 @@ export const OBSERVER = {
  */
 export type Dataset = 'active' | 'full' | 'synthetic';
 
-const DEFAULT_DATASET: Dataset = 'active';
+/**
+ * `full` since 2026-09-14. The piece is about density, and `active` is payloads only:
+ * it leaves out the ~3k debris fragments and ~500 rocket bodies that are the whole
+ * argument for the image. Once debris had a mark of its own - a turning shard - there
+ * was no reason to keep publishing a sky with the wreckage edited out.
+ *
+ * It costs 831 KB gzipped against 661, and a worker tick of 14-17 ms against ~13.
+ * Both measured, both fine.
+ */
+const DEFAULT_DATASET: Dataset = 'full';
 
 function datasetFromUrl(): Dataset {
   const requested = new URLSearchParams(location.search).get('catalog');

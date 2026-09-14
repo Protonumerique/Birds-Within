@@ -89,12 +89,15 @@ on the live `.bin` files — so there is no hand-rolled compression.
 
 | dataset | objects (2026-09-13) | size | what |
 |---|---|---|---|
-| `active` | 16,563 | 661 KB gzipped | every payload CelesTrak lists as active — the default |
-| `full` | 20,933 | 831 KB gzipped | union of every CelesTrak GP dataset, newest elements win |
+| `full` | 20,933 | 831 KB gzipped | union of every CelesTrak GP dataset, newest elements win — **the default** |
+| `active` | 16,563 | 661 KB gzipped | every payload CelesTrak lists as active: the same sky with the wreckage removed |
 | `synthetic` | 1,692 | 129 KB | **invented** orbits, committed, development fallback only |
 
-`?catalog=full` switches without a rebuild: which image the piece wants is an aesthetic
-question, answered by looking. The **dev server** falls back to `synthetic` when the real
+`?catalog=` switches without a rebuild: which image the piece wants is an aesthetic
+question, answered by looking. **`full` became the default on 2026-09-14**, once debris
+had a mark of its own — the piece is about density, and `active` is payloads only, so it
+was publishing a sky with the wreckage edited out. `?catalog=active` still gives that sky.
+It costs 831 KB gzipped against 661, and a worker tick of 14–17 ms against ~13. The **dev server** falls back to `synthetic` when the real
 catalogue has not been fetched, and the HUD labels it. **Production never falls back** —
 a missing catalogue is an error, because the piece is about what is actually up there.
 
@@ -244,8 +247,11 @@ The `kind` byte this reads has been in the catalogue since Step 1 and went unuse
 until now. It is a **heuristic on the name** (`kindFromName`): GP data carries no
 object type at all, SATCAT does but joining it is a second dataset for one byte, and
 an unnamed fragment therefore reads as a payload. Good enough to read density
-composition, which is what the image needs; not a classification. Note that `active`
-is payloads only, so wreckage is visible almost entirely under `?catalog=full`.
+composition, which is what the image needs; not a classification. `full` is the default precisely so this is
+visible; `?catalog=active` is payloads only and shows almost none of it.
+
+A fragment can be **both** — there is debris in the geosynchronous belt — and it draws as
+a blue shard. The two axes compose rather than compete, which is the test of the rule.
 
 **Vocabulary:** *choir* is the internal name — code, config, this file — and is meant
 to carry through to Step 4, where the belt is a drone under the passes. On screen the
