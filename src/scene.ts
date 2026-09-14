@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { HIGHLIGHT, SKY, TRAIL } from './config';
+import { CHOIR, HIGHLIGHT, SKY, TRAIL } from './config';
 import { NO_POSITION, directionFromAltAz, type SkyFrame } from './sky-frame';
 import type { FramePair } from './sky-stream';
 import { pickNearest } from './picking';
@@ -146,20 +146,27 @@ const RING_VERT = /* glsl */ `
 
   attribute float aIndex;
   attribute float aMark;
+  attribute float aChoir;
 
   uniform float uRadius;
   uniform float uPixelRatio;
   uniform float uRingPx;
+  uniform float uChoirPx;
   uniform float uHovered;
   uniform float uHoverScale;
   uniform vec3 uRingColor;
   uniform vec3 uMarkColor;
+  uniform vec3 uChoirColor;
   uniform float uDimAtHorizon;
   uniform float uFullBright;
+
+  uniform float uStrokePx;
+  uniform float uChoirStrokePx;
 
   varying float vSizePx;
   varying vec3 vColor;
   varying float vAlpha;
+  varying float vStrokePx;
 
   void main() {
     vec3 dir;
@@ -170,37 +177,43 @@ const RING_VERT = /* glsl */ `
       vSizePx = 0.0;
       vColor = vec3(0.0);
       vAlpha = 0.0;
+      vStrokePx = 0.0;
       return;
     }
 
     bool hovered = abs(aIndex - uHovered) < 0.5;
     bool marked = aMark > 0.5;
+    bool choir = aChoir > 0.5;
 
     float elevation = asin(clamp(dir.y, -1.0, 1.0));
     float bright = mix(uDimAtHorizon, 1.0, clamp(elevation / uFullBright, 0.0, 1.0));
 
-    vColor = (hovered || marked) ? uMarkColor : uRingColor;
-    vAlpha = hovered ? 1.0 : (marked ? bright : 1.0);
+    // A choir object is never in the readout, so a ring on one is always the
+    // pointer's. Blue, smaller, and at a steady brightness: it does not climb or
+    // descend, so dimming it by elevation would say something that is not true.
+    vColor = choir ? uChoirColor : ((hovered || marked) ? uMarkColor : uRingColor);
+    vAlpha = choir ? 1.0 : (hovered ? 1.0 : (marked ? bright : 1.0));
 
-    vSizePx = uRingPx * (hovered ? uHoverScale : 1.0) * uPixelRatio;
+    vStrokePx = choir ? uChoirStrokePx : uStrokePx;
+    vSizePx = (choir ? uChoirPx : uRingPx) * (hovered ? uHoverScale : 1.0) * uPixelRatio;
     gl_PointSize = vSizePx;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(dir * uRadius, 1.0);
   }
 `;
 
 const RING_FRAG = /* glsl */ `
-  uniform float uStrokePx;
   uniform float uPixelRatio;
 
   varying float vSizePx;
   varying vec3 vColor;
   varying float vAlpha;
+  varying float vStrokePx;
 
   void main() {
     // Work in device pixels so the stroke is the same width at any size, with a
     // one-pixel antialiased edge and a pixel of margin inside the sprite.
     float dist = length(gl_PointCoord - vec2(0.5)) * vSizePx;
-    float stroke = uStrokePx * uPixelRatio;
+    float stroke = vStrokePx * uPixelRatio;
     float ringRadius = 0.5 * vSizePx - 0.5 * stroke - 1.0;
     float alpha = 1.0 - smoothstep(-0.5, 0.5, abs(dist - ringRadius) - 0.5 * stroke);
     alpha *= vAlpha;
@@ -284,6 +297,8 @@ export class SkyScene {
   private highlightCount = 0;
   /** Per-object 0/1: is this one stuck to the pointer's last click. */
   private markAttribute: THREE.BufferAttribute;
+  /** Per-object 0/1: is this one in the geosynchronous belt. Set once. */
+  private choirAttribute: THREE.BufferAttribute;
   private marked: number[] = [];
   private readonly ringUniforms;
 
@@ -372,6 +387,10 @@ export class SkyScene {
     ringsGeom.setAttribute('aIndex', new THREE.BufferAttribute(ids, 1));
     this.markAttribute = new THREE.BufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setAttribute('aMark', this.markAttribute);
+    // Which objects are the choir. Fixed for the life of the catalogue, so it is
+    // uploaded once by setChoir and never touched again.
+    this.choirAttribute = new THREE.BufferAttribute(new Float32Array(count), 1);
+    ringsGeom.setAttribute('aChoir', this.choirAttribute);
     // A ring per object is the ceiling: the readout's rows, every mark, and the hover.
     this.highlightIndex = new THREE.BufferAttribute(new Uint32Array(count), 1).setUsage(THREE.DynamicDrawUsage);
     ringsGeom.setIndex(this.highlightIndex);
@@ -383,8 +402,11 @@ export class SkyScene {
       uPixelRatio: this.uniforms.uPixelRatio,
       uRingPx: { value: HIGHLIGHT.diameterPx },
       uStrokePx: { value: HIGHLIGHT.strokePx },
+      uChoirPx: { value: CHOIR.diameterPx },
+      uChoirStrokePx: { value: CHOIR.strokePx },
       uRingColor: { value: new THREE.Color(HIGHLIGHT.color) },
       uMarkColor: { value: new THREE.Color(HIGHLIGHT.markColor) },
+      uChoirColor: { value: new THREE.Color(CHOIR.color) },
       uHovered: { value: -1 },
       uHoverScale: { value: HIGHLIGHT.hoverScale },
       uDimAtHorizon: { value: HIGHLIGHT.dimAtHorizon },
@@ -495,6 +517,17 @@ export class SkyScene {
     this.marked = [...marked];
     for (const i of this.marked) if (i >= 0 && i < mark.length) mark[i] = 1;
     this.markAttribute.needsUpdate = true;
+  }
+
+  /**
+   * Which objects belong to the choir. Fixed by the catalogue, so this is called
+   * once: a choir ring is blue and smaller, and says so without the CPU's help.
+   */
+  setChoir(choir: Uint8Array): void {
+    const flags = this.choirAttribute.array as Float32Array;
+    const n = Math.min(choir.length, flags.length);
+    for (let i = 0; i < n; i++) flags[i] = choir[i]!;
+    this.choirAttribute.needsUpdate = true;
   }
 
   /** The object under the pointer, or -1. One uniform: a sweep uploads nothing. */

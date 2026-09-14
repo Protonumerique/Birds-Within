@@ -91,7 +91,7 @@ on the live `.bin` files — so there is no hand-rolled compression.
 |---|---|---|---|
 | `active` | 16,563 | 661 KB gzipped | every payload CelesTrak lists as active — the default |
 | `full` | 20,933 | 831 KB gzipped | union of every CelesTrak GP dataset, newest elements win |
-| `synthetic` | 1,452 | 110 KB | **invented** orbits, committed, development fallback only |
+| `synthetic` | 1,692 | 129 KB | **invented** orbits, committed, development fallback only |
 
 `?catalog=full` switches without a rebuild: which image the piece wants is an aesthetic
 question, answered by looking. The **dev server** falls back to `synthetic` when the real
@@ -103,6 +103,43 @@ a missing catalogue is an error, because the piece is about what is actually up 
 dataset together is 20,933 of them — every payload, but ~3k of ~15k debris, nearly all
 from the Fengyun-1C, Cosmos 2251 and Iridium 33 breakups. General debris and most rocket
 bodies are not published as GP data. `scripts/catalog-sources.mjs` holds the list.
+
+### The choir
+
+Decided 2026-09-14. The geosynchronous belt is not a set of passes and is not treated
+as one. From Berlin it is a **fixed arc across the southern sky**, peaking at 30° due
+south and sinking to the horizon toward east and west — roughly 150° of the ring is up,
+and those objects never rise and never set. Turn the camera south and they read as a
+line of still points while everything else streams past. That contrast is free: it
+falls straight out of the geometry.
+
+- **Membership is decided from the elements**, in `isGeosynchronous` in
+  `catalog-format.ts`: 0.95–1.05 revolutions a day and eccentricity under 0.05. Not
+  from range — a Molniya or Tundra orbit reaches the same distance at apogee and *does*
+  pass, slowly; the eccentricity is what tells them apart. A half-synchronous navigation
+  satellite (two revolutions a day) rises and sets like anything else. The band is
+  generous, ±1300 km around the geostationary radius, so it takes in the graveyard and
+  the inclined ones left drifting when station-keeping stopped.
+- **The worker computes it once at init** and ships a `choir` byte array in `ready`,
+  beside `kind`. It has to happen there: the render thread transfers the catalogue away
+  and never sees a mean motion.
+- **They are kept out of the readout entirely**, which is now *Passing now* and counts
+  only passes. They get **no track**, kept or not — 70 minutes of a geosynchronous orbit
+  is a few degrees of wobble around a fixed point, a smudge where the object already is.
+  They are **never the track's fallback** either, so keeping one does not take the
+  ambient track away from the sky.
+- They can still be hovered and kept. Their ring is **smaller and blue** (`CHOIR`), at a
+  steady brightness rather than dimmed by elevation — they do not climb or descend, so
+  dimming them by it would say something untrue.
+- **Exempt from `releaseBelowDeg`.** A good many sit under two degrees and stay there
+  forever; releasing them on that rule would make the low half of the belt impossible to
+  keep. They are let go only below the true horizon, which for them means never.
+- Their data has its own block under the table, currently a count and a row per kept
+  object. **Where the choir's data really belongs is an open dashboard question** — the
+  block is a placeholder, deliberately plain.
+- `synthetic.bin` carries **240 invented belt objects** so all of this is exercisable
+  offline. Deliberately over-represented at ~15% against a real few per cent: a dev sky
+  has to show the thing being worked on.
 
 ### Propagation: all of it in the sky worker
 
@@ -434,9 +471,10 @@ Anything that computes range rate by hand must not repeat the naive version.
 - `public/data/synthetic.bin` **is** committed. `npm run make:synthetic` regenerates it:
   deterministic, drag-free so it never decays, and **not real objects**. It exists so a
   fresh clone runs offline; nothing may be concluded from it.
-- The readout lists only the highest `HUD_ROWS` objects above the horizon, refreshed at
-  4 Hz. At catalogue scale there is no listing the whole thing, and rebuilding rows every
-  frame is wasted DOM work.
+- The readout lists only the highest `HUD_ROWS` **passing** objects above the horizon,
+  refreshed at 4 Hz. At catalogue scale there is no listing the whole thing, and
+  rebuilding rows every frame is wasted DOM work. The choir is excluded — see *The
+  choir* — so anything reading "what is overhead" must say which of the two it means.
 
 ## Licence
 

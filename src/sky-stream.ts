@@ -55,6 +55,8 @@ export class SkyStream {
   readonly count: number;
   readonly names: string[];
   readonly kind: Uint8Array;
+  /** 1 where the object is in the geosynchronous belt: the choir, which never sets. */
+  readonly choir: Uint8Array;
   readonly dropped: number;
   readonly generatedAt: Date;
   readonly initMs: number;
@@ -89,6 +91,7 @@ export class SkyStream {
     this.count = ready.count;
     this.names = ready.names;
     this.kind = ready.kind;
+    this.choir = ready.choir;
     this.dropped = ready.dropped;
     this.generatedAt = new Date(ready.generatedAt);
     this.initMs = ready.initMs;

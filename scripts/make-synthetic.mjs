@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Generate public/data/synthetic.bin: ~1450 INVENTED orbits across plausible LEO
- * shells, in the packed catalogue format.
+ * Generate public/data/synthetic.bin: ~1700 INVENTED orbits - plausible LEO shells
+ * plus a geosynchronous belt - in the packed catalogue format.
  *
  * It is the development fallback and nothing else. Nothing in it is a real object,
  * and no conclusion about where anything actually is may be drawn from it. The dev
@@ -88,6 +88,49 @@ for (const [count, altitude, inclination, label] of SHELLS) {
       });
     }
   }
+}
+
+/**
+ * The choir: a synthetic geosynchronous belt.
+ *
+ * Without one, nothing in development exercises the code that keeps the belt out of
+ * the readout, rings it blue and gives it no track - the whole distinction would be
+ * invisible until the real catalogue was fetched.
+ *
+ * Deliberately over-represented. The real belt is a few per cent of the catalogue;
+ * here it is nearer fifteen, because a dev sky has to *show* the thing being worked
+ * on. As with everything in this file, nothing may be concluded from it.
+ *
+ * At these inclinations the ascending node is degenerate - an orbit in the equatorial
+ * plane has no meaningful node - so the slot around the ring is really
+ * RAAN + ARGP + MEAN_ANOMALY. Pinning the first two at zero makes the mean anomaly
+ * the longitude outright, which spreads the belt evenly and predictably.
+ */
+const CHOIR_COUNT = 240;
+
+for (let k = 0; k < CHOIR_COUNT; k++) {
+  catnr++;
+  // One in ten sits in the graveyard a few hundred kilometres above the belt, where
+  // retired satellites are boosted, carrying the inclination left behind when
+  // station-keeping stopped.
+  const retired = k % 10 === 0;
+  const alt = retired ? uniform(36_050, 36_350) : 35_786 + uniform(-25, 25);
+  const inc = retired ? uniform(0.5, 12) : uniform(0.01, 0.6);
+
+  records.push({
+    OBJECT_NAME: `SYNTH GEO ${catnr}`,
+    NORAD_CAT_ID: catnr,
+    EPOCH: EPOCH.toISOString(),
+    INCLINATION: fixed(inc, 4),
+    RA_OF_ASC_NODE: 0,
+    ARG_OF_PERICENTER: 0,
+    MEAN_ANOMALY: fixed(wrap360((k / CHOIR_COUNT) * 360 + uniform(-0.6, 0.6)), 4) % 360,
+    ECCENTRICITY: fixed(uniform(2e-7, 9e-5), 8),
+    MEAN_MOTION: fixed(meanMotion(alt), 8),
+    BSTAR: 0,
+    MEAN_MOTION_DOT: 0,
+    MEAN_MOTION_DDOT: 0,
+  });
 }
 
 const bytes = new Uint8Array(encodeCatalog(records, EPOCH));

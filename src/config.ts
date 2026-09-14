@@ -132,6 +132,29 @@ export const HIGHLIGHT = {
  * Drawn as real pixel-width lines (three's `LineSegments2`), not GL hairlines, which
  * ANGLE renders one pixel wide whatever you ask for.
  */
+/**
+ * The choir: the geosynchronous belt, which from Berlin is a fixed arc across the
+ * southern sky, peaking at 30° due south. Those objects never rise and never set.
+ *
+ * They are drawn like everything else - small, because they are 36,000 km away - but
+ * they are not passes, so they are kept out of the readout, given no track even when
+ * kept, and ringed in blue rather than amber and smaller. A different kind of thing,
+ * marked as one. Which objects qualify is decided in catalog-format.ts, from the
+ * elements; this is only how they look.
+ */
+export const CHOIR = {
+  /** Ring diameter, CSS pixels. Smaller than HIGHLIGHT.diameterPx on purpose. */
+  diameterPx: 17,
+  strokePx: 1.2,
+  /** Cool against the passing objects' amber, and cooler than the eclipsed blue. */
+  color: '#8ad4ff',
+  /**
+   * How many kept choir objects the panel names. A placeholder: where the choir's
+   * data belongs is a dashboard question, not yet answered.
+   */
+  rows: 6,
+};
+
 export const TRAIL = {
   /** Minutes of past track to draw. */
   pastMinutes: 35,

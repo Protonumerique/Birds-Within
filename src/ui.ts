@@ -1,4 +1,4 @@
-import { OBSERVER, CLOCK, HIGHLIGHT, HOVER_KEEPS_ROW, HUD_ROWS, type Dataset } from './config';
+import { OBSERVER, CHOIR, CLOCK, HIGHLIGHT, HOVER_KEEPS_ROW, HUD_ROWS, type Dataset } from './config';
 import type { Clock } from './clock';
 import type { SkyFrame } from './sky-frame';
 import type { Selection } from './selection';
@@ -30,6 +30,8 @@ export interface HudSource {
   dataset: Dataset;
   /** When the element sets were fetched. */
   generatedAt: Date;
+  /** 1 where the object is in the geosynchronous belt, indexed like `names`. */
+  choir: Uint8Array;
   /** What the pointer is touching and what it has stuck to. Shared with the scene. */
   selection: Selection;
 }
@@ -55,7 +57,8 @@ const markColor = (alpha: number) => `rgba(${MARK_RGB[0]}, ${MARK_RGB[1]}, ${MAR
 const releaseBelow = (HIGHLIGHT.releaseBelowDeg * Math.PI) / 180;
 
 export function createHud(root: HTMLElement, clock: Clock, source: HudSource): Hud {
-  const { names, selection } = source;
+  const { names, selection, choir } = source;
+  const isChoir = (i: number) => choir[i] === 1;
   /**
    * What wears the trail when nothing is marked: whatever is highest, held until it
    * sets. A mark takes it over - clicking an object is how you ask for its track.
@@ -86,13 +89,18 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
     <div class="panel">
       <div class="sub" id="count">—</div>
       <table>
-        <thead><tr><th class="name">Overhead now</th><th>Alt</th><th>Az</th><th>Range</th><th>Δv km/s</th></tr></thead>
+        <thead><tr><th class="name">Passing now</th><th>Alt</th><th>Az</th><th>Range</th><th>Δv km/s</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
+      <div class="choir">
+        <div class="sub" id="choircount">—</div>
+        <div id="choirrows"></div>
+      </div>
       <div class="legend">
         <i style="color:var(--lit)">●</i> sunlit &nbsp;
         <i style="color:var(--eclipsed)">●</i> eclipsed &nbsp;
-        <i style="color:var(--ink-faint)">●</i> below horizon &nbsp;·&nbsp; drag to look, scroll to zoom,
+        <i style="color:var(--ink-faint)">●</i> below horizon &nbsp;
+        <i style="color:var(--choir)">○</i> choir &nbsp;·&nbsp; drag to look, scroll to zoom,
         click to keep
       </div>
     </div>
@@ -103,6 +111,8 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
   const tlEl = $('tl');
   const rowsEl = $('rows');
   const countEl = $('count');
+  const choirCountEl = $('choircount');
+  const choirRowsEl = $('choirrows');
   const pauseBtn = $<HTMLButtonElement>('pause');
   const scrub = $<HTMLInputElement>('scrub');
   const scrubVal = $('scrubval');
@@ -156,7 +166,26 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
   };
   rowsEl.onpointerleave = () => selection.setHovered(-1);
 
+  // A compact row per kept choir object. A placeholder for a panel not yet designed:
+  // the choir has no passes to report, so the table's columns say nothing about it.
+  const choirPool = Array.from({ length: CHOIR.rows }, () => {
+    const div = document.createElement('div');
+    div.className = 'crow';
+    div.innerHTML = `<span class="cname"></span><span class="cdata"></span>`;
+    choirRowsEl.append(div);
+    return { div, name: div.firstElementChild!, data: div.lastElementChild!, index: -1 };
+  });
+
+  choirRowsEl.onclick = (e) => {
+    const div = (e.target as HTMLElement | null)?.closest('.crow');
+    const row = choirPool.find((r) => r.div === div);
+    if (row && row.index >= 0) selection.toggle(row.index);
+  };
+
   const above: number[] = [];
+  /** Above the horizon and not in the choir: the only things that make a pass. */
+  const passing: number[] = [];
+  const keptChoir: number[] = [];
   const listed: number[] = [];
   const ringed: number[] = [];
   /**
@@ -168,8 +197,18 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
   let scanned: SkyFrame | null = null;
   let lit = 0;
 
+  /**
+   * What wears the track. The newest mark that can have one - the choir cannot - and
+   * otherwise whatever is highest. So keeping a geosynchronous object does not take
+   * the track away from the sky; it simply does not get one of its own.
+   */
+  const trackTarget = () => {
+    const newest = selection.newestWhere((i) => !isChoir(i));
+    return newest >= 0 ? newest : fallback;
+  };
+
   return {
-    selectedIndex: () => (selection.newest >= 0 ? selection.newest : fallback),
+    selectedIndex: trackTarget,
     listed: () => listed,
     ringed: () => ringed,
 
@@ -184,20 +223,32 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
       if (frame !== scanned) {
         scanned = frame;
         above.length = 0;
+        passing.length = 0;
         lit = 0;
         for (let i = 0; i < frame.count; i++) {
           if (frame.range[i]! < 0 || frame.elevation[i]! <= 0) continue;
           above.push(i);
+          // The choir is up by definition and has no pass to report, so it is split
+          // off here, once - everything downstream reads `passing`.
+          if (isChoir(i)) continue;
+          passing.push(i);
           if (frame.shadow[i]! < 0.5) lit++;
         }
         above.sort((a, b) => frame.elevation[b]! - frame.elevation[a]!);
+        passing.sort((a, b) => frame.elevation[b]! - frame.elevation[a]!);
       }
 
       // A mark is let go when its object sinks into the haze: the readout lists what
       // is overhead, and an object a degree off the horizon has nothing left to show.
       // Its row is then free for whatever has risen in its place.
+      //
+      // The choir is exempt. Those objects hold a fixed elevation forever, and a good
+      // many of them sit under two degrees - releasing them on that rule would make
+      // the low half of the belt impossible to keep at all. They are let go only when
+      // genuinely below the horizon, which for them means never.
       for (const i of selection.marked) {
-        if (frame.range[i]! < 0 || frame.elevation[i]! <= releaseBelow) selection.release(i);
+        const floor = isChoir(i) ? 0 : releaseBelow;
+        if (frame.range[i]! < 0 || frame.elevation[i]! <= floor) selection.release(i);
       }
 
       /**
@@ -208,11 +259,11 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
        */
       const kept = (i: number) => selection.isMarked(i) || (HOVER_KEEPS_ROW && i === selection.hovered);
       listed.length = 0;
-      for (const i of above) {
+      for (const i of passing) {
         if (listed.length >= HUD_ROWS) break;
         if (kept(i)) listed.push(i);
       }
-      for (const i of above) {
+      for (const i of passing) {
         if (listed.length >= HUD_ROWS) break;
         if (listed.indexOf(i) < 0) listed.push(i);
       }
@@ -227,17 +278,45 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
         if (listed.indexOf(i) < 0) ringed.push(i);
       }
 
-      const marks = selection.marked.size;
+      // The choir's own line, and a row for each one kept. What else belongs here is
+      // the open dashboard question - for now it is enough that keeping one is not a
+      // dead end, since it will never appear in the table above.
+      keptChoir.length = 0;
+      for (const i of above) {
+        if (isChoir(i) && (selection.isMarked(i) || i === selection.hovered)) keptChoir.push(i);
+      }
+      const choirUp = above.length - passing.length;
+      choirCountEl.textContent = `${choirUp} in the choir · never rise, never set`;
+
+      for (let r = 0; r < choirPool.length; r++) {
+        const row = choirPool[r]!;
+        const i = keptChoir[r];
+        if (i === undefined) {
+          row.index = -1;
+          row.div.hidden = true;
+          continue;
+        }
+        row.div.hidden = false;
+        row.index = i;
+        const azDeg = ((deg(frame.azimuth[i]!) % 360) + 360) % 360;
+        row.name.textContent = names[i] ?? '—';
+        row.data.textContent =
+          `+${deg(frame.elevation[i]!).toFixed(1)}°  ${azDeg.toFixed(0)}° ${compass(azDeg)}  ` +
+          `${frame.range[i]!.toLocaleString('en', { maximumFractionDigits: 0 })} km`;
+      }
+
+      const passingMarks = listed.filter((i) => selection.isMarked(i)).length;
       countEl.textContent =
-        `${above.length} above the horizon · ${lit} sunlit` +
-        `${above.length > HUD_ROWS ? ` · showing ${HUD_ROWS}` : ''}` +
-        `${marks ? ` · ${marks} kept` : ''}`;
+        `${passing.length} passing · ${lit} sunlit` +
+        `${passing.length > HUD_ROWS ? ` · showing ${HUD_ROWS}` : ''}` +
+        `${passingMarks ? ` · ${passingMarks} kept` : ''}`;
 
       // Nothing marked: the trail stays on whatever was highest until that one sets.
-      if (fallback < 0 || frame.range[fallback]! < 0 || frame.elevation[fallback]! <= 0) {
-        fallback = above[0] ?? -1;
+      // A choir object can never be the fallback - it gets no track at all.
+      if (fallback < 0 || isChoir(fallback) || frame.range[fallback]! < 0 || frame.elevation[fallback]! <= 0) {
+        fallback = passing[0] ?? -1;
       }
-      const selected = selection.newest >= 0 ? selection.newest : fallback;
+      const selected = trackTarget();
 
       for (let r = 0; r < pool.length; r++) {
         const row = pool[r]!;

@@ -5,6 +5,7 @@
   --ink-faint: #3d5566;
   --lit: #fff2d6;
   --eclipsed: #7fa6bf;
+  --choir: #8ad4ff;
   --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, monospace;
 }
 
@@ -198,6 +199,38 @@ tr.tagged.up td.name {
 
 td.name {
   width: 100%;
+}
+
+/*
+ * The choir - the geosynchronous belt. It makes no passes, so it gets no columns;
+ * a kept one is named here instead. Placeholder for a panel not yet designed.
+ */
+.choir {
+  margin-top: 8px;
+  border-top: 1px solid rgba(120, 160, 190, 0.14);
+  padding-top: 6px;
+}
+
+.crow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--choir);
+  cursor: pointer;
+  padding: 1px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.crow .cname {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crow .cdata {
+  white-space: pre;
+  opacity: 0.75;
 }
 
 .legend {

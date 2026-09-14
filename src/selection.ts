@@ -60,8 +60,20 @@ export class Selection {
     this.marksVersion++;
   }
 
-  /** The most recently marked object, or -1. Gets the trail. */
+  /** The most recently marked object, or -1. */
   get newest(): number {
     return this.order.length ? this.order[this.order.length - 1]! : -1;
+  }
+
+  /**
+   * The most recently marked object the caller will accept, or -1. The track goes to
+   * this one: the choir gets none, so the newest mark is not always the answer.
+   */
+  newestWhere(accept: (index: number) => boolean): number {
+    for (let k = this.order.length - 1; k >= 0; k--) {
+      const i = this.order[k]!;
+      if (accept(i)) return i;
+    }
+    return -1;
   }
 }

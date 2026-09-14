@@ -55,11 +55,13 @@ async function main() {
   const clock = new Clock();
   const scene = new SkyScene(canvas, stream.count);
   const selection = new Selection();
+  scene.setChoir(stream.choir);
   const hud = createHud(hudRoot, clock, {
     names: stream.names,
     dataset,
     generatedAt: stream.generatedAt,
     selection,
+    choir: stream.choir,
   });
   const debug = DEBUG ? createDebugPanel(document.body) : null;
   // ?debug: the running piece, for poking at from the console.
@@ -140,15 +142,19 @@ async function main() {
     // Tracks for everything being kept - or for the single highest object when
     // nothing is. The worker answers these on the same thread it computes frames on,
     // so Trails caps how many are asked for at once and how often.
+    // The choir gets no track, kept or not. A geosynchronous object's 70 minutes of
+    // orbit is a few degrees of wobble around a fixed point - it would draw a smudge
+    // where the object already is, and say nothing the still point does not.
     tracked.length = 0;
     if (TRAIL.allMarked) {
-      for (const i of selection.marked) tracked.push(i);
-    } else if (selection.newest >= 0) {
+      for (const i of selection.marked) if (stream.choir[i] !== 1) tracked.push(i);
+    } else if (selection.newest >= 0 && stream.choir[selection.newest] !== 1) {
       tracked.push(selection.newest);
     }
     if (tracked.length === 0) {
+      // Never the choir: hud.selectedIndex already skips it, and this says so here too.
       const fallback = hud.selectedIndex();
-      if (fallback >= 0) tracked.push(fallback);
+      if (fallback >= 0 && stream.choir[fallback] !== 1) tracked.push(fallback);
     }
     trails.update(tracked, now);
 

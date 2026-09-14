@@ -107,6 +107,8 @@ export type FromWorker =
       count: number;
       names: string[];
       kind: Uint8Array;
+      /** 1 where the object is in the geosynchronous belt - see isGeosynchronous. */
+      choir: Uint8Array;
       /** Element sets SGP4 rejected at init - decayed or corrupt. */
       dropped: number;
       generatedAt: number;

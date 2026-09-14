@@ -97,6 +97,43 @@ export function kindFromName(name: string): Kind {
   return KIND.OTHER;
 }
 
+/**
+ * The choir: objects in the geosynchronous belt, which from any observer never rise
+ * and never set. They hang at a fixed point in the southern sky (from the northern
+ * hemisphere) for the life of the page.
+ *
+ * They break the idea of a pass, which is what the readout is for, so they are kept
+ * out of it and given their own treatment. This is why the test is on the elements
+ * rather than on range: a Molniya or Tundra orbit reaches the same distance at
+ * apogee and *does* pass, slowly - the eccentricity is what tells them apart. A
+ * half-synchronous navigation satellite (two revolutions a day) rises and sets like
+ * anything else and is not in here either.
+ *
+ * The band is generous - roughly +/- 1300 km around the geostationary radius - so it
+ * takes in the graveyard a few hundred kilometres above the belt, where retired
+ * satellites are boosted, and the inclined ones left drifting when station-keeping
+ * stopped. An object at the edge of the band does creep along the belt, about ten
+ * degrees a day; at the timescale of a sky it is standing still.
+ *
+ * Physics, not taste, so the numbers live here rather than in config.ts - which
+ * carries how the choir is drawn.
+ */
+export const GEOSYNCHRONOUS = {
+  /** Revolutions per day. A sidereal day is 1.00274. */
+  minRevsPerDay: 0.95,
+  maxRevsPerDay: 1.05,
+  /** Near-circular. Tundra is ~0.27, Molniya ~0.7, a geostationary transfer orbit ~0.73. */
+  maxEccentricity: 0.05,
+};
+
+export function isGeosynchronous(elements: { MEAN_MOTION: number; ECCENTRICITY: number }): boolean {
+  return (
+    elements.MEAN_MOTION >= GEOSYNCHRONOUS.minRevsPerDay &&
+    elements.MEAN_MOTION <= GEOSYNCHRONOUS.maxRevsPerDay &&
+    elements.ECCENTRICITY <= GEOSYNCHRONOUS.maxEccentricity
+  );
+}
+
 export interface PackedCatalog {
   version: number;
   count: number;

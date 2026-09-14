@@ -31,7 +31,7 @@ import {
   ShadowFractionCalculator,
   type SatRec,
 } from 'satellite.js';
-import { decodeCatalog } from './catalog-format';
+import { decodeCatalog, isGeosynchronous } from './catalog-format';
 import {
   NO_POSITION,
   directionFromAltAz,
@@ -92,9 +92,11 @@ async function init(bytes: ArrayBuffer, geodetic: GeodeticObserver) {
   const satrecs: SatRec[] = [];
   const names: string[] = [];
   const kinds: number[] = [];
+  const choirs: number[] = [];
   let dropped = 0;
   for (let i = 0; i < packed.count; i++) {
-    const satrec = json2satrec({ ...packed.elementsAt(i), OBJECT_ID: '', ELEMENT_SET_NO: 0 });
+    const elements = packed.elementsAt(i);
+    const satrec = json2satrec({ ...elements, OBJECT_ID: '', ELEMENT_SET_NO: 0 });
     if (satrec.error) {
       dropped++;
       continue;
@@ -102,6 +104,9 @@ async function init(bytes: ArrayBuffer, geodetic: GeodeticObserver) {
     satrecs.push(satrec);
     names.push(packed.names[i]!);
     kinds.push(packed.kind[i]!);
+    // Read from the elements, here, because this is the only place they exist: the
+    // render thread transfers the catalogue away and never sees a mean motion.
+    choirs.push(isGeosynchronous(elements) ? 1 : 0);
   }
 
   // Replacing a live propagator: its WASM memory is not garbage collected.
@@ -119,17 +124,19 @@ async function init(bytes: ArrayBuffer, geodetic: GeodeticObserver) {
   sky = { satrecs, runtime, propagator, observer, observerEcf: geodeticToEcf(observer) };
 
   const kind = Uint8Array.from(kinds);
+  const choir = Uint8Array.from(choirs);
   post(
     {
       type: 'ready',
       count: satrecs.length,
       names,
       kind,
+      choir,
       dropped,
       generatedAt: packed.generatedAt.getTime(),
       initMs: performance.now() - started,
     },
-    [kind.buffer]
+    [kind.buffer, choir.buffer]
   );
 }
 
