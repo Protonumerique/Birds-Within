@@ -138,9 +138,8 @@ falls straight out of the geometry.
 - **Exempt from `releaseBelowDeg`.** A good many sit under two degrees and stay there
   forever; releasing them on that rule would make the low half of the belt impossible to
   keep. They are let go only below the true horizon, which for them means never.
-- Their data has its own block under the table, currently a count and a row per kept
-  object. **Where the choir's data really belongs is an open dashboard question** — the
-  block is a placeholder, deliberately plain.
+- Their data lives in a **grid of squares** at the foot of the column, not a list —
+  see *The panel*. Five hundred objects that never move are not a list.
 - `synthetic.bin` carries **240 invented belt objects** so all of this is exercisable
   offline. Deliberately over-represented at ~15% against a real few per cent: a dev sky
   has to show the thing being worked on.
@@ -286,7 +285,7 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
   colour-managed like the clear colour, so full haze is exactly empty sky, not a darker
   band. Not everything being visible is deliberate.
 - **Highlight rings** (`HIGHLIGHT`): a white ring around each object the readout lists —
-  the top `HUD_ROWS` by elevation, and for now the default voices for Step 4 — and an
+  the rows its groups are showing, and for now the default voices for Step 4 — and an
   amber one around whatever the pointer is touching or has kept. The rings
   are a second, *indexed* draw of the points' own GPU buffers running the same
   `BLEND_GLSL`, so a ring cannot drift from its object at any time rate; the only CPU work
@@ -326,6 +325,53 @@ uniform; a tick arriving uploads into whichever of the two GPU slots is stale.
   scene disappears. `render` clamps pitch to ±89° itself rather than trusting whoever
   set it — the drag handler is not the only thing that does, debug snippets included.
 
+### The panel
+
+Redesigned 2026-09-15. **One narrow column** (`READOUT.widthPx`, 272 px), pinned left,
+full height: title and time at the top, the lists under them, a spacer that eats the
+slack, and the belt's grid **aligned to the floor** of the frame at any window size.
+The piece often lives in a small canvas, so the panel had to stop being a table.
+
+`src/ui.ts` owns the column; `src/ui-group.ts` and `src/ui-choir.ts` are components
+that do not know where they are. **Moving the whole panel to a strip along the bottom
+is a change to one CSS block, not a rewrite** — the layout choice is not locked in.
+
+**Three groups, because the sky holds three kinds of thing that do not compare:**
+what is passing, what is wreckage, and the belt. Each carries the accent its objects
+already wear on the sky — amber for passing, the shard's own light brown
+(`PALETTE.lit` at the debris intensity, `#80796b`) for debris, blue for the belt.
+
+**A row is a name until you keep it.** Default rows sort themselves by elevation and
+show nothing else; they churn, and that is what they are for. Keeping one **opens** it:
+data on a second line, a box in the group's colour, and it **stops moving** — kept rows
+sit above the defaults in the order they were kept, and a new one appends to the bottom
+of that zone so nothing already on screen shifts. Whatever you are watching holds the
+position you found it in, which is what will make it addressable later by a control or
+a voice.
+
+**Hovering never opens a row.** An open row is two lines tall, so opening on hover
+moves every row beneath it — including, half the time, the one the pointer is on, which
+slides out from under the cursor and marks the wrong object when clicked. Found by
+driving it. Hovering tints the row instead; colour costs no layout.
+
+**The belt gets a grid, not a list.** One square per geostationary object above the
+horizon, **ordered by azimuth and filled column by column, so horizontal position in
+the grid is horizontal position in the sky** — the leftmost column is one end of the
+arc, the rightmost the other, and sweeping the pointer across the grid sweeps the
+southern sky in the same direction. An arbitrary order would have cost the same and
+meant nothing. The set barely changes (these objects never set), so the grid is rebuilt
+only when membership actually differs.
+
+**No text in the grid.** One box above it fills while the pointer is on a square and is
+otherwise blank — five hundred objects cost five hundred squares and not one label,
+which is the *No tags on the sky* rule applied to the panel. Clicking a square keeps the
+object exactly as clicking it in the sky does; the grid is meant to become the belt's
+keyboard when the sound arrives.
+
+**The wording is deliberately thin.** A group heading is a word and a count. "showing
+N", "N kept", "never rise, never set" are gone — they were the panel explaining itself,
+which is what a panel does when it has not decided what it is.
+
 ### The pointer
 
 `src/selection.ts` holds what the pointer is touching and what it has stuck to; the
@@ -349,12 +395,10 @@ about the mouse.
   last degree is already gone from the image while its row sits on. Two degrees also
   settles the geostationary case — a satellite parked at +0.4° in the south *never*
   sets, and at a 0° threshold would hold its row for the life of the page.
-- The sky can hold more rings than the panel can hold rows: past `HUD_ROWS` marks, the
-  lowest keep their rings and lose their rows.
-- `HOVER_KEEPS_ROW` decides whether pointing at an object the readout is *not* listing
-  gives it a row. On, the panel answers "what is that one?" as you sweep, at the cost of
-  the rows under it shifting by one each time. Off, hovering only recolours rows that
-  are already there. Aesthetic, so it is answerable by looking; it is on.
+- The sky can hold more rings than the column holds rows, and the whole belt is
+  reachable from its grid, so a ring does not imply a row.
+- `READOUT.hoverOpensRow` decides whether pointing at an object no row is showing gives
+  it one. **Off** — see *The panel* for why.
 - **Every kept object gets a track** (`TRAIL.allMarked`), falling back to a single one
   through whatever is highest when nothing is kept. See *Tracks* below.
 
@@ -551,10 +595,11 @@ Anything that computes range rate by hand must not repeat the naive version.
 - `public/data/synthetic.bin` **is** committed. `npm run make:synthetic` regenerates it:
   deterministic, drag-free so it never decays, and **not real objects**. It exists so a
   fresh clone runs offline; nothing may be concluded from it.
-- The readout lists only the highest `HUD_ROWS` **passing** objects above the horizon,
-  refreshed at 4 Hz. At catalogue scale there is no listing the whole thing, and
-  rebuilding rows every frame is wasted DOM work. The choir is excluded — see *The
-  choir* — so anything reading "what is overhead" must say which of the two it means.
+- The readout lists only the highest few of each group above the horizon, refreshed at
+  4 Hz. At catalogue scale there is no listing the whole thing, and rebuilding rows every
+  frame is wasted DOM work. Passing, debris and the belt are three separate groups — see
+  *The panel* — so anything reading "what is overhead" must say which of the three it
+  means.
 
 ## Licence
 

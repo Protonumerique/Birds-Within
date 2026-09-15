@@ -1,5 +1,6 @@
 :root {
   color-scheme: dark;
+  --col-w: 272px;
   --ink: #cfe0ec;
   --ink-dim: #6d8698;
   --ink-faint: #3d5566;
@@ -45,57 +46,90 @@ body {
   cursor: pointer;
 }
 
+/*
+ * The panel: one narrow column, pinned left, full height.
+ *
+ * Title and time, then the lists, then a spacer that eats whatever height is left, so
+ * the belt's grid sits on the floor of the frame at any window size. Moving the whole
+ * thing to a strip along the bottom is a change to this block and nothing else - the
+ * groups and the grid do not know where they are.
+ */
 #hud {
   position: fixed;
   inset: 0;
-  padding: 20px;
+  padding: 14px;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
   pointer-events: none;
 }
 
-#hud > * {
+.col {
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: var(--col-w);
+  max-width: calc(100vw - 28px);
+  height: 100%;
+  min-height: 0;
+  gap: 10px;
 }
 
-.panel {
-  max-width: min(420px, calc(100vw - 40px));
+/* Takes the slack, so the grid below it is bottom-aligned. */
+.spacer {
+  flex: 1 1 auto;
+  min-height: 10px;
+}
+
+.lists {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* Lists clip from the bottom rather than pushing the grid off a short window. */
+.lists .group {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.foot {
+  flex: 0 0 auto;
 }
 
 h1 {
   margin: 0 0 2px;
-  font: 400 13px/1.2 var(--mono);
-  letter-spacing: 0.34em;
+  font: 400 12px/1.2 var(--mono);
+  letter-spacing: 0.3em;
   text-transform: uppercase;
   color: var(--ink);
 }
 
 .sub {
   color: var(--ink-dim);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
+  font-size: 10px;
 }
 
 .clock {
-  margin-top: 14px;
-  font-size: 22px;
-  letter-spacing: 0.04em;
+  margin-top: 10px;
+  font-size: 18px;
+  letter-spacing: 0.03em;
   color: var(--lit);
 }
 
 .clock small {
   display: block;
-  font-size: 11px;
-  letter-spacing: 0.14em;
+  font-size: 10px;
+  letter-spacing: 0.1em;
   color: var(--ink-dim);
 }
 
 .controls {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  gap: 5px;
   align-items: center;
-  margin-top: 14px;
+  margin-top: 8px;
 }
 
 button,
@@ -105,8 +139,9 @@ select {
   border: 1px solid rgba(120, 160, 190, 0.22);
   color: var(--ink);
   font: inherit;
+  font-size: 10px;
   letter-spacing: 0.08em;
-  padding: 5px 10px;
+  padding: 4px 7px;
   border-radius: 2px;
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease;
@@ -119,129 +154,136 @@ select:hover {
 }
 
 input[type="range"] {
-  flex: 1 1 180px;
-  min-width: 140px;
+  flex: 1 1 auto;
+  width: 100%;
   accent-color: #7fa6bf;
   cursor: pointer;
 }
 
-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 11px;
-}
+/* --- groups ---------------------------------------------------------------- */
 
-th {
-  text-align: left;
-  font-weight: 400;
-  color: var(--ink-faint);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 0 10px 5px 5px;
-  border-bottom: 1px solid rgba(120, 160, 190, 0.14);
-}
-
-td {
-  /* The left padding is the breathing room inside a tagged row's box. */
-  padding: 3px 10px 3px 5px;
-  color: var(--ink-dim);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-tr.up td {
-  color: var(--ink);
-}
-
-tr.up td.name {
-  color: var(--lit);
-}
-
-tr.selected td.name::before {
-  content: "▸ ";
-  color: var(--ink);
-}
-
-tr {
-  cursor: pointer;
-  transition: transform 140ms ease;
-}
-
-/*
- * A row whose object the pointer is on, or has stuck to: boxed in the ring's own
- * colour and stepped out of the column, so the sky and the list can be read as one
- * thing without a single word being printed on the sky.
- *
- * The box is inset shadows on the cells, not borders: a border would add its width
- * to the row's height, and a row that grows under the pointer can push itself out
- * from under it. Shadows cost no layout at all.
- */
-tr.tagged {
-  transform: translateX(20px);
-}
-
-tr.tagged td {
-  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row);
-}
-
-tr.tagged td:first-child {
-  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row),
-    inset 1px 0 0 var(--mark-row);
-}
-
-tr.tagged td:last-child {
-  box-shadow: inset 0 1px 0 var(--mark-row), inset 0 -1px 0 var(--mark-row),
-    inset -1px 0 0 var(--mark-row);
-}
-
-tr.tagged.up td.name {
-  color: var(--mark-row);
-}
-
-td.name {
-  width: 100%;
-}
-
-/*
- * The choir - the geosynchronous belt. It makes no passes, so it gets no columns;
- * a kept one is named here instead. Placeholder for a panel not yet designed.
- */
-.choir {
-  margin-top: 8px;
-  border-top: 1px solid rgba(120, 160, 190, 0.14);
-  padding-top: 6px;
-}
-
-.crow {
+.group h2 {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  font-size: 10px;
-  color: var(--geo);
-  cursor: pointer;
-  padding: 1px 0;
+  align-items: baseline;
+  margin: 0 0 3px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid rgba(120, 160, 190, 0.14);
+  font: 400 9px/1.4 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.group h2 .gn {
   font-variant-numeric: tabular-nums;
 }
 
-.crow .cname {
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * A default row is a name and nothing else. Keeping one opens it: the data appears on
+ * a second line and a box in the group's colour closes around both. The box is inset
+ * shadows rather than a border, so opening a row costs no layout and cannot push the
+ * row under the pointer out from under it.
+ */
+.row {
+  padding: 1px 4px;
+  color: var(--ink-dim);
+  font-size: 11px;
+  line-height: 1.45;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color 120ms ease;
 }
 
-.crow .cdata {
-  white-space: pre;
+.row:hover,
+.row.lit {
+  color: var(--accent);
+}
+
+.row .rd {
+  display: none;
+}
+
+.row.open {
+  color: var(--accent);
+  padding: 2px 4px;
+  box-shadow:
+    inset 0 1px 0 var(--accent),
+    inset 0 -1px 0 var(--accent),
+    inset 1px 0 0 var(--accent),
+    inset -1px 0 0 var(--accent);
+}
+
+.row.open .rn {
+  display: block;
+}
+
+.row.open .rd {
+  display: block;
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the belt -------------------------------------------------------------- */
+
+/*
+ * One square per geostationary object, ordered by azimuth and filled column by column,
+ * so left-to-right across the grid is left-to-right across the southern sky.
+ */
+.cgrid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 1fr);
+  grid-template-rows: repeat(var(--rows), var(--cell));
+  grid-auto-flow: column;
+  gap: var(--gap);
+}
+
+.cell {
+  background: rgba(138, 212, 255, 0.16);
+  cursor: pointer;
+}
+
+.cell:hover,
+.cell.hov {
+  background: var(--geo);
+}
+
+.cell.on {
+  background: rgba(138, 212, 255, 0.62);
+}
+
+.cell.on.hov {
+  background: var(--geo);
+}
+
+/* Blank until the pointer is on a square. Fixed height, so nothing jumps. */
+.cbox {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 30px;
+  margin-bottom: 4px;
+  padding: 2px 5px;
+  border: 1px solid rgba(138, 212, 255, 0.38);
+  color: var(--geo);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.cbox .cd {
   opacity: 0.75;
-}
-
-.legend {
-  margin-top: 10px;
-  color: var(--ink-faint);
-  letter-spacing: 0.06em;
-}
-
-.legend i {
-  font-style: normal;
 }
 
 .err {
@@ -270,10 +312,13 @@ td.name {
 }
 
 @media (max-width: 620px) {
+  :root {
+    --col-w: 208px;
+  }
   .clock {
-    font-size: 17px;
+    font-size: 15px;
   }
   #hud {
-    padding: 14px;
+    padding: 10px;
   }
 }

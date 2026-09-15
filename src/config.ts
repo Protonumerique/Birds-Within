@@ -48,25 +48,55 @@ export const DATASET: Dataset = datasetFromUrl();
 
 export const catalogUrl = (dataset: Dataset) => `${import.meta.env.BASE_URL}data/${dataset}.bin`;
 
-/** How many objects the readout lists, highest first. */
-export const HUD_ROWS = 14;
+/**
+ * The readout, redesigned 2026-09-15 as a single narrow column.
+ *
+ * The piece lives in a canvas that is often small, so the panel had to stop being a
+ * table and become a list: names only, until you ask for more. A row you keep unfolds
+ * its data, takes a box in its group's colour, and **stops moving** - the rest go on
+ * sorting themselves by elevation underneath.
+ *
+ * Three groups, because the sky has three kinds of thing in it and they do not compare:
+ * what is passing, what is wreckage, and the belt - which gets a grid rather than a
+ * list, since five hundred objects that never move are not a list.
+ */
+export const READOUT = {
+  /** Column width. Narrow on purpose; the sky is the piece, not the panel. */
+  widthPx: 272,
+  /** Default rows per group, before anything is kept. Names only. */
+  passingRows: 10,
+  debrisRows: 6,
+  /**
+   * Whether pointing at an object no row is showing gives it one, at the bottom of
+   * the open zone so nothing above it moves.
+   *
+   * **Off.** An opened row is two lines tall instead of one, so opening it on hover
+   * moves every row beneath it - including, half the time, the one the pointer is
+   * on, which then slides out from under the cursor and marks the wrong object when
+   * clicked. Unfolding is the reward for *keeping* something, not for passing over
+   * it. Hovering still tints the row and rings the object, which is the link.
+   */
+  hoverOpensRow: false,
+};
 
 /**
- * Whether pointing at an object the readout is NOT listing gives it a row for as
- * long as the pointer stays on it.
+ * The belt's grid: one square per geostationary object above the horizon.
  *
- * On, the panel answers "what is that one?" while you sweep the sky, which is the
- * only way a name can ever be attached to a mark - nothing textual is drawn up there.
- * The cost is churn: the row is inserted in elevation order, so the rows under it
- * shift by one every time the pointer crosses something new.
+ * **Ordered by azimuth, filled column by column**, so horizontal position in the grid
+ * is horizontal position in the sky. The grid is the belt, flattened - the leftmost
+ * column is the eastern end of the arc and the rightmost is the western. Hovering
+ * across it sweeps the southern sky in the same direction, which is the whole reason
+ * to prefer it over an arbitrary index order that would have cost exactly the same.
  *
- * Off, hovering only ever recolours a row that is already listed, and an unlisted
- * object has to be clicked before it is named.
- *
- * Which of the two the piece wants is an aesthetic question, so it is answerable by
- * looking rather than by reasoning. Marked objects keep their rows either way.
+ * Nothing is written in it. Data appears above the grid only while the pointer is on
+ * a square, so five hundred objects cost five hundred squares and no text at all.
  */
-export const HOVER_KEEPS_ROW = true;
+export const CHOIR_GRID = {
+  columns: 24,
+  /** Square height in CSS pixels; width comes from the column, so they are near-square. */
+  cellPx: 8,
+  gapPx: 1,
+};
 
 /**
  * The visual grammar, decided 2026-09-14. Two axes, kept strictly apart:
@@ -222,11 +252,6 @@ export const CHOIR = {
   strokePx: 1.2,
   /** The ring matches the point: one blue means one thing. */
   color: PALETTE.geostationary,
-  /**
-   * How many kept choir objects the panel names. A placeholder: where the choir's
-   * data belongs is a dashboard question, not yet answered.
-   */
-  rows: 6,
 };
 
 export const TRAIL = {

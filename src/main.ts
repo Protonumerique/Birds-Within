@@ -62,6 +62,7 @@ async function main() {
     generatedAt: stream.generatedAt,
     selection,
     choir: stream.choir,
+    kind: stream.kind,
   });
   const debug = DEBUG ? createDebugPanel(document.body) : null;
   // ?debug: the running piece, for poking at from the console.
