@@ -49,6 +49,8 @@ export class Group {
   private countEl: HTMLElement;
   private pool: Row[] = [];
   private readonly rgb: string;
+  /** Is the pointer in this list right now. See `update` for what it decides. */
+  private pointerInside = false;
 
   constructor(
     title: string,
@@ -67,11 +69,18 @@ export class Group {
 
     // A row and its object are the same thing touched from two places.
     this.rowsEl.onclick = (e) => this.selection.toggle(this.indexAt(e.target));
+    this.rowsEl.onpointerenter = () => {
+      this.pointerInside = true;
+    };
     this.rowsEl.onpointermove = (e) => {
+      this.pointerInside = true;
       const i = this.indexAt(e.target);
       if (i >= 0) this.selection.setHovered(i);
     };
-    this.rowsEl.onpointerleave = () => this.selection.setHovered(-1);
+    this.rowsEl.onpointerleave = () => {
+      this.pointerInside = false;
+      this.selection.setHovered(-1);
+    };
   }
 
   private indexAt(target: EventTarget | null): number {
@@ -103,9 +112,19 @@ export class Group {
     for (const i of selection.marked) {
       if (candidates.indexOf(i) >= 0) this.listed.push(i);
     }
-    // A hovered object with no row of its own can borrow one at the bottom of the
-    // open zone, so nothing above it moves. Off by default - see READOUT.
-    if (READOUT.hoverOpensRow && hovered >= 0 && !selection.isMarked(hovered) && candidates.indexOf(hovered) >= 0) {
+    // A hovered object with no row of its own borrows one at the bottom of the open
+    // zone, so nothing above it moves - but **only while the pointer is out in the
+    // sky**. An open row is two lines tall, so opening one while the pointer is in
+    // this list pushes every row below it down, including the one under the cursor,
+    // which then slides away and marks the wrong object when clicked. Pointing at the
+    // sky cannot do that, because the pointer is nowhere near the rows.
+    if (
+      READOUT.hoverOpensRow &&
+      !this.pointerInside &&
+      hovered >= 0 &&
+      !selection.isMarked(hovered) &&
+      candidates.indexOf(hovered) >= 0
+    ) {
       this.listed.push(hovered);
     }
     const open = this.listed.length;

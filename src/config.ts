@@ -70,13 +70,14 @@ export const READOUT = {
    * Whether pointing at an object no row is showing gives it one, at the bottom of
    * the open zone so nothing above it moves.
    *
-   * **Off.** An opened row is two lines tall instead of one, so opening it on hover
-   * moves every row beneath it - including, half the time, the one the pointer is
-   * on, which then slides out from under the cursor and marks the wrong object when
-   * clicked. Unfolding is the reward for *keeping* something, not for passing over
-   * it. Hovering still tints the row and rings the object, which is the link.
+   * **On, but only while the pointer is out in the sky.** An opened row is two lines
+   * tall instead of one, so opening one while the pointer is inside the list pushes
+   * every row below it down - including the one under the cursor, which slides away
+   * and marks the wrong object when clicked. Pointing at the sky cannot do that,
+   * because the pointer is nowhere near the rows. So the sky names what you point at,
+   * and the list only tints. The group tracks this itself; see ui-group.ts.
    */
-  hoverOpensRow: false,
+  hoverOpensRow: true,
 };
 
 /**

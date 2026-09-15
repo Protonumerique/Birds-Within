@@ -349,10 +349,21 @@ of that zone so nothing already on screen shifts. Whatever you are watching hold
 position you found it in, which is what will make it addressable later by a control or
 a voice.
 
-**Hovering never opens a row.** An open row is two lines tall, so opening on hover
-moves every row beneath it — including, half the time, the one the pointer is on, which
-slides out from under the cursor and marks the wrong object when clicked. Found by
-driving it. Hovering tints the row instead; colour costs no layout.
+**Hovering opens a row — but only from the sky.** An open row is two lines tall, so
+opening one while the pointer is *inside the list* pushes every row below it down,
+including the one under the cursor, which slides away and marks the wrong object when
+clicked (found by driving it: three clicks, three wrong objects). Pointing at the **sky**
+cannot do that, because the pointer is nowhere near the rows. So each group tracks
+whether the pointer is in its own list: the sky names what you point at, the list only
+tints. Turning it off wholesale was the first fix and it was wrong — it made two thirds
+of the sky feel dead, since the lists show ten objects out of a thousand.
+
+**The ring follows the pointer, not the row.** Whatever the pointer is on gets a ring,
+whether or not it has a row, whatever group it belongs to. This is its own line in
+`ui.ts` rather than a clause inside the per-group loops, because hanging it off the rows
+is exactly the bug that shipped on 2026-09-15: splitting the readout into groups quietly
+scoped the ring to *listed* objects, and since the lists hold ten of a thousand, hovering
+anything else silently did nothing at all.
 
 **The belt gets a grid, not a list.** One square per geostationary object above the
 horizon, **ordered by azimuth and filled column by column, so horizontal position in
@@ -398,7 +409,9 @@ about the mouse.
 - The sky can hold more rings than the column holds rows, and the whole belt is
   reachable from its grid, so a ring does not imply a row.
 - `READOUT.hoverOpensRow` decides whether pointing at an object no row is showing gives
-  it one. **Off** — see *The panel* for why.
+  it one. **On, and only while the pointer is out in the sky** — see *The panel*.
+- **Anything the pointer is on is ringed**, row or no row, group or no group. A ring
+  must never be conditional on a row: the lists show ten objects out of a thousand.
 - **Every kept object gets a track** (`TRAIL.allMarked`), falling back to a single one
   through whatever is highest when nothing is kept. See *Tracks* below.
 

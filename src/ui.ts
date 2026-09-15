@@ -190,6 +190,15 @@ export function createHud(root: HTMLElement, clock: Clock, source: HudSource): H
       for (const i of choirUp) {
         if (selection.isMarked(i) || i === selection.hovered) ringed.push(i);
       }
+      // **The pointer always rings what it is on**, row or no row, group or no group.
+      // This has to be its own line rather than a clause inside one of the loops
+      // above: the lists show ten objects out of a thousand, so the overwhelmingly
+      // common case is pointing at something that has no row at all, and hanging the
+      // ring off the row was what silently took hover away from the whole sky.
+      const hovered = selection.hovered;
+      if (hovered >= 0 && frame.elevation[hovered]! > 0 && ringed.indexOf(hovered) < 0) {
+        ringed.push(hovered);
+      }
 
       // Nothing kept: the track stays on whatever was highest until that one sets.
       if (fallback < 0 || isChoir(fallback) || frame.range[fallback]! < 0 || frame.elevation[fallback]! <= 0) {
